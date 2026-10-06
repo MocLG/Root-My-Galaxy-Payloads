@@ -365,6 +365,21 @@
         "url": "https://raw.githubusercontent.com/MocLG/Root-My-Galaxy-Payloads/main/kernelsu/ksud-r13s-S731BXXS9BZH1-kdp",
         "size": 3607184
       }
+    },
+    {
+      "payloadId": "r13s-S731BXXU9CZIF",
+      "displayName": "Galaxy S25 FE (International) | Kernel 6.1.162",
+      "models": ["SM-S731B"],
+      "kernelVersions": ["6.1.162"],
+      "requiresFreshP0Session": true,
+      "exploit": {
+        "url": "https://raw.githubusercontent.com/MocLG/Root-My-Galaxy-Payloads/main/artifacts/r13s-S731BXXU9CZIF/cve-2026-43499-app.so",
+        "size": 151928
+      },
+      "kernelsu": {
+    "url": "https://raw.githubusercontent.com/MocLG/Root-My-Galaxy-Payloads/main/kernelsu/ksud-r13s-S731BXXU9CZIF-kdp",
+    "size": 4602440
+      }
     }
   ]
 }

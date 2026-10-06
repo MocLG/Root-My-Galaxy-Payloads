@@ -37,10 +37,19 @@ between KMIs.
 | `ksud-dm1q-S911U1UES6DYI3-kdp` | Same exact DYI3 build | `android13-5.15.153` | Device-tested late-load binary embedding the exact DYI3 no-patch-text module |
 | `android12-5.10_kernelsu-A536EXXSNGZG3-kdp.ko` | `SM-A536E`, `A536EXXSNGZG3` | `android12-5.10` | Device-tested exact A53 module with Samsung KDP/RKP/DEFEX support and live text/table patching disabled |
 | `ksud-A536EXXSNGZG3-kdp` | Same exact A53 build | `android12-5.10` | Device-tested late-load binary embedding the exact A53 module |
+| `android14-6.1_kernelsu-r13s-S731BXXU9CZIF-kdp.ko` | `SM-S731B`, `S731BXXU9CZIF` (One UI 9) | `android14-6.1` | Exact CZIF module built from source with the `android14-6.1-20260313` DDK image and the target release `6.1.162-android14-11`, with `CONFIG_KSU_SAMSUNG_NO_PATCH_TEXT=y` so `ksu_patch_text()` returns `-EOPNOTSUPP` instead of calling `stop_machine()`. That is mandatory on this Exynos 2400 SoC: the live text patching path panics in Samsung/Exynos EL2 and reboots the device. `check_symbol` clean, zero-length `__versions`, and a clean manual-relocation audit against the recovered CZIF `vmlinux` (202 undefined imports, zero missing, zero CRC mismatches). Device-tested: loads on hardware without the `stop_machine()` panic |
+| `ksud-r13s-S731BXXU9CZIF-kdp` | Same exact CZIF build | `android14-6.1` | Device-tested late-load binary rebuilt from v3.2.5 + the Samsung patch + a reconstructed `--ephemeral` flag, embedding the exact CZIF module |
 
 The standalone `.ko` files are retained for auditing. Root My Galaxy downloads
 the corresponding `ksud-*` file because `ksud late-load` loads its embedded
 `<kmi>_kernelsu.ko` asset.
+
+Rebuilding `ksud` from a clean v3.2.5 checkout currently needs four dependency
+substitutions, because `Kernel-SU/adb_client`, `Kernel-SU/ksu_props`,
+`Kernel-SU/java-properties` and `Kernel-SU/rustix` have been deleted from
+GitHub: `adb_client` from `Baka-SU/adb_client` (same revision `d97a9664`),
+`prop-rs-android` from `Baka-SU/ksu_props`, and `java-properties 2.0.0` /
+`rustix 0.38.34` from crates.io.
 
 The S916B FZG1 pair is built from Samsung's released `SM-S916B_16_Opensource` tree with the live FZG1 config and Android clang `r450784e`. Its zero-length `__versions` section and retained symbol tables are intended for KernelSU's kallsyms-aware manual loader. Audit against the exact recovered FZG1 `vmlinux.elf` found all 200 undefined names. Plain `insmod` is not supported. The target patch [`KernelSU-v3.2.5-dm2q-fzg1.patch`](patches/KernelSU-v3.2.5-dm2q-fzg1.patch) selects the exact FZG1 `enum ucount_type` ABI and hard-stops RKP syscall-table writes; the build also sets `CONFIG_KSU_SAMSUNG_NO_PATCH_TEXT=y`. Use the root helper's guarded `--late-load` operation so the loader's security-domain and stdio transition can complete safely. Module initialization is not yet confirmed on S916B hardware.
 
@@ -114,6 +123,51 @@ contains the complete source delta from the tagged v3.2.5 tree:
 - stage `ksud` at `/data/local/tmp/.ksud-stage`, rename it onto the same
   `/data` filesystem before loading the module, then finish labels/assets after
   the module is active.
+
+### The `--ephemeral` late-load flag (not in the patch above)
+
+`su_daemon.c` invokes `logcat late-load --ephemeral --allow-shell
+--package-name ...`, but `--ephemeral` is **not** upstream KernelSU `v3.2.5`
+and is **not** part of `KernelSU-v3.2.5-samsung-kdp-rkp-defex.patch`. The
+released `ksud-*-kdp` binaries were built from an unpublished private patch, so
+a plain rebuild rejects the flag with `error: unexpected argument '--ephemeral'
+found` and `late-load` dies at `Failed to stage ksud` before the module loads.
+
+The flag exists because Samsung DEFEX Immutable Root v2 blocks writes to
+`/data/adb`. Reconstruct it by adding the argument to the `LateLoad` command in
+`userspace/ksud/src/cli.rs`:
+
+```rust
+        /// Skip /data/adb staging and binary extraction (Samsung DEFEX)
+        #[arg(long)]
+        ephemeral: bool,
+```
+
+Pass it through to `late_load::run`, then in `userspace/ksud/src/late_load.rs`
+guard the two `/data/adb` writers:
+
+```rust
+    if ephemeral {
+        info!("ephemeral mode: skipping daemon staging in /data/adb");
+    } else {
+        utils::stage_daemon_from("/data/local/tmp/.ksud-stage")
+            .context("Failed to stage ksud")?;
+    }
+    // ...
+    if ephemeral {
+        info!("ephemeral mode: skipping ksud installation into /data/adb");
+    } else {
+        utils::finish_install(None).context("Failed to finish ksud installation")?;
+    }
+```
+
+The module still loads, SELinux policy is still applied and the KernelSU
+control channel still works. sucompat is unavailable in this mode because
+`/data/adb/ksud` never exists, so root comes from the control channel
+(`ksud debug su`) rather than an execve redirect. BusyBox, `bootctl` and the
+embedded module must be staged under `userspace/ksud/bin/aarch64/` before the
+rebuild; verify the embedded module by recompressing it with `libflate`
+(`include-flate` 0.3.4) and matching the full blob inside the stripped binary.
 
 ## 6.1 generalization
 
