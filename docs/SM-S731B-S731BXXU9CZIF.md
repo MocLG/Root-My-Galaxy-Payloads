@@ -242,22 +242,13 @@ Verified with NDK `27.0.12077973`, API 35.
 
 | File | Size | SHA-256 |
 | --- | ---: | --- |
-| `artifacts/r13s-S731BXXU9CZIF/cve-2026-43499-app.so` | 152,336 | `940fda3528a7a3cb33eef1c43cde345d35b5549e0a0be57f14c37842cd521015` |
+| `artifacts/r13s-S731BXXU9CZIF/cve-2026-43499-app.so` | 151,928 | `b16c04ced60a1f1dee649f9e6214112ea326709244346587421960b35720ed2a` |
 | `artifacts/r13s-S731BXXU9CZIF/cve-2026-43499-root` | 26,960 | `1d5750239bc0c8db5040183af00cbd90f4fe9114d8e1581de77237da6f5cbf63` |
 | `kernelsu/android14-6.1_kernelsu-r13s-S731BXXU9CZIF-kdp.ko` | 398,336 | `13fd97a8d303c63c8a3df5d70ad93f8fd311aec927a1dcdef1c3c004d492fd2f` |
 | `kernelsu/ksud-r13s-S731BXXU9CZIF-kdp` | 4,602,440 | `5cd19258692d87743a92078b25b40974d07e30a4f7e7dbeb10777ae039db7c7c` |
 
 The published `cve-2026-43499-app.so` is the plain `APP_PRELOAD` output, matching
 the BZH1/BZF3 publication convention.
-
-The `cve-2026-43499-app.so` above was rebuilt at commit `fb540242d2ae`
-("r13s: fix gate_holder Q refcount to prevent put_page crash on lock"). The
-`compensate_refcount()` repair no longer runs through the pipe physical R/W
-helpers, which cannot reach vmemmap addresses, and instead uses
-`configfs_read_once`/`configfs_write_once` against `p0_gate_page_struct` and
-`p0_probe_page_struct`. The `cve-2026-43499-root` helper is unaffected: its
-source (`src/su_daemon.c`) is unchanged, so the rebuilt binary is byte-identical
-to the previously published one.
 
 ## Status
 
