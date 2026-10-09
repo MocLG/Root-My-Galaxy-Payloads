@@ -242,7 +242,7 @@ Verified with NDK `27.0.12077973`, API 35.
 
 | File | Size | SHA-256 |
 | --- | ---: | --- |
-| `artifacts/r13s-S731BXXU9CZIF/cve-2026-43499-app.so` | 153,760 | `6554acd8ea4771323f75ecc528f2d9d5a9241f02348468fb4821e2c152a56ed1` |
+| `artifacts/r13s-S731BXXU9CZIF/cve-2026-43499-app.so` | 153,280 | `737e8eb1eef231b3590c5b8a26bedcc53c1167e2a857ae3a20e2c1d0a0bc4062` |
 | `artifacts/r13s-S731BXXU9CZIF/cve-2026-43499-root` | 26,960 | `1d5750239bc0c8db5040183af00cbd90f4fe9114d8e1581de77237da6f5cbf63` |
 | `kernelsu/android14-6.1_kernelsu-r13s-S731BXXU9CZIF-kdp.ko` | 398,336 | `13fd97a8d303c63c8a3df5d70ad93f8fd311aec927a1dcdef1c3c004d492fd2f` |
 | `kernelsu/ksud-r13s-S731BXXU9CZIF-kdp` | 4,602,440 | `5cd19258692d87743a92078b25b40974d07e30a4f7e7dbeb10777ae039db7c7c` |
@@ -303,43 +303,6 @@ The `cve-2026-43499-root` helper is unaffected: its
 source (`src/su_daemon.c`) is unchanged, so the rebuilt binary is byte-identical
 to the previously published one.
 
-## Speed-up: the KernelSnitch object window
-
-`prepare_kernel_page()` narrows the KernelSnitch brute-force to the object
-indices the reclaim was validated with (`APP_SLIDE_MIN/MAX_OBJECT_INDEX`,
-`APP_FOPS_MIN_OBJECT_INDEX`). That window is a filter, not a property of the
-leak. The futex collision set belongs to the leaked mm address, so the object
-is found in whatever slot of its slab it happens to occupy, and the freed slot
-index is not used anywhere downstream: only `base` (the slab page) reaches
-`configure_slide_bank_geometry()` and `prepare_skb_payload()`, which ignore
-the index for this target.
-
-The successful CZIF run shows what the filter costs. Slide accepted only 4 of
-the 32 slots (27-30), fops 8 (24-31), and the run discarded 9 slide rebuilds
-and 3 + 2 fops rebuilds waiting for a leak to land inside the window. Every
-discard re-runs the whole page preparation - the pre/post/spray child groom
-set plus the collision pass - and the run's own `elapsed_ms` values add up to
-~131 s of discarded rebuilds against ~29 s of page preparations that were
-kept.
-
-`kernelsnitch_widen_search()` re-arms the finished, unsuccessful brute-force
-with the whole slab as the window, and `prepare_kernel_page()` re-runs the
-pass once before it gives up on the leak. The second pass is a stateless
-address scan, so it costs milliseconds where the rebuild it replaces costs
-seconds, and the groomed window stays the first and fastest attempt, so a run
-whose leaks land where they did in the successful log prepares its pages
-exactly as before. A widened leak that does not reclaim is rejected by the
-existing `verify_p0_pipe_oracle_gate()`/`result` check and re-looped, so the
-fallback can cost one retry but cannot turn a miss into a wrong write.
-
-Verified against the arm64 payload sources with the NDK and run under
-`qemu-aarch64-static`, using the real `futex_hash()` and the real
-`kernelsnitch_widen_search()`: a leak at index 29 is still found by the
-groomed window, a leak at index 7 is missed by it (the retry storm above) and
-is recovered by the widened pass returning exactly that object, exactly one of
-the 32 slots satisfies the collision set, and the helper refuses to re-arm a
-live collision set.
-
 ## Status
 
 The profile, payload, module and `ksud` are build-verified, statically audited
@@ -359,12 +322,6 @@ live-patching panic, and the KernelSU late-load completed.
 - The KernelSU module and `ksud` are device-tested as well as statically
   audited against the recovered CZIF `vmlinux`.
 - Root is per-boot; no boot image was modified.
-- The KernelSnitch full-slab fallback is build- and logic-verified (arm64
-  sources under `qemu-aarch64-static`), but its reclaim outcome has not been
-  measured in a device run yet. A fresh `SM-S731B` log should show
-  `KernelSnitch widening object window` / `KernelSnitch full-slab fallback`
-  only where the previous rounds discarded a leak, and the total exploit time
-  should drop by the ~131 s of discarded rebuilds the successful log records.
 - MTE is active on this SoC, so the profile sets `KERNELSNITCH_MTE_ENABLED=1`.
 - `ksud` carries the `--ephemeral` flag that `su_daemon.c` passes to
   `late-load`. That flag is **not** upstream KernelSU: the shipped BZH1/BZF3
