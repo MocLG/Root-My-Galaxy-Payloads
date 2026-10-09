@@ -242,13 +242,34 @@ Verified with NDK `27.0.12077973`, API 35.
 
 | File | Size | SHA-256 |
 | --- | ---: | --- |
-| `artifacts/r13s-S731BXXU9CZIF/cve-2026-43499-app.so` | 151,928 | `b16c04ced60a1f1dee649f9e6214112ea326709244346587421960b35720ed2a` |
+| `artifacts/r13s-S731BXXU9CZIF/cve-2026-43499-app.so` | 152,944 | `725416db2b68164d3f695e60e61b39f8edde9d6116c290b54b7edc191d605c49` |
 | `artifacts/r13s-S731BXXU9CZIF/cve-2026-43499-root` | 26,960 | `1d5750239bc0c8db5040183af00cbd90f4fe9114d8e1581de77237da6f5cbf63` |
 | `kernelsu/android14-6.1_kernelsu-r13s-S731BXXU9CZIF-kdp.ko` | 398,336 | `13fd97a8d303c63c8a3df5d70ad93f8fd311aec927a1dcdef1c3c004d492fd2f` |
 | `kernelsu/ksud-r13s-S731BXXU9CZIF-kdp` | 4,602,440 | `5cd19258692d87743a92078b25b40974d07e30a4f7e7dbeb10777ae039db7c7c` |
 
 The published `cve-2026-43499-app.so` is the plain `APP_PRELOAD` output, matching
 the BZH1/BZF3 publication convention.
+
+The `cve-2026-43499-app.so` above was rebuilt from the tree in which the
+gate-holder refcount repair of `fb540242d2ae` has been reverted
+(`2da7431654a3`/`dad46bb8ba17`), so that repair is not part of this binary.
+
+The current `cve-2026-43499-app.so` additionally retries the final
+user-mode-helper pool injection. `pool->worklist` belongs to the whole
+kernel: another thread that queues work on the same unbound pool inside
+the write/verify window calls `list_add_tail()` and rewrites the tail link,
+which the single-shot check reported as
+`root umh prepublish write failed counters=1/1/1 prev=0` and turned into a
+deferred install. Both CZIF device runs captured in
+`RootMyGalaxy-original-failed.log.txt` reached the pipe physical R/W proof
+and failed on exactly that step. `install_workqueue_umh_root()` now
+re-reads the live pool state and repeats the
+accounting/tail/publish window up to `ROOT_UMH_INJECT_ATTEMPTS` (8) times,
+reporting a `root umh prepublish lost race`/`root umh publish lost race`
+warning with the observed tail value for each lost round instead of
+aborting the attempt. The `cve-2026-43499-root` helper is unaffected: its
+source (`src/su_daemon.c`) is unchanged, so the rebuilt binary is byte-identical
+to the previously published one.
 
 ## Status
 
