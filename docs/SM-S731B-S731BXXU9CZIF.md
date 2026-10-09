@@ -242,7 +242,7 @@ Verified with NDK `27.0.12077973`, API 35.
 
 | File | Size | SHA-256 |
 | --- | ---: | --- |
-| `artifacts/r13s-S731BXXU9CZIF/cve-2026-43499-app.so` | 152,944 | `725416db2b68164d3f695e60e61b39f8edde9d6116c290b54b7edc191d605c49` |
+| `artifacts/r13s-S731BXXU9CZIF/cve-2026-43499-app.so` | 153,280 | `737e8eb1eef231b3590c5b8a26bedcc53c1167e2a857ae3a20e2c1d0a0bc4062` |
 | `artifacts/r13s-S731BXXU9CZIF/cve-2026-43499-root` | 26,960 | `1d5750239bc0c8db5040183af00cbd90f4fe9114d8e1581de77237da6f5cbf63` |
 | `kernelsu/android14-6.1_kernelsu-r13s-S731BXXU9CZIF-kdp.ko` | 398,336 | `13fd97a8d303c63c8a3df5d70ad93f8fd311aec927a1dcdef1c3c004d492fd2f` |
 | `kernelsu/ksud-r13s-S731BXXU9CZIF-kdp` | 4,602,440 | `5cd19258692d87743a92078b25b40974d07e30a4f7e7dbeb10777ae039db7c7c` |
@@ -267,7 +267,39 @@ re-reads the live pool state and repeats the
 accounting/tail/publish window up to `ROOT_UMH_INJECT_ATTEMPTS` (8) times,
 reporting a `root umh prepublish lost race`/`root umh publish lost race`
 warning with the observed tail value for each lost round instead of
-aborting the attempt. The `cve-2026-43499-root` helper is unaffected: its
+aborting the attempt.
+
+The retry alone was not enough, and the second CZIF log
+(`RootMyGalaxy-failed2.log.txt`) shows why:
+
+```
+[-] root umh prepublish lost race try=1/8 counters=1/1/1 prev=0 \
+    tail=ffffff88751b6408 want=ffffff802f10e008 next=ffffff882e419c28
+[!] root umh pool did not settle for retry try=1
+```
+
+That is not a lost store but a lost *insert*. A `list_add_tail()` that runs
+between our tail store and its readback takes our entry as its `prev`, so the
+kernel writes its own new tail into our `entry.next` and sets `pool->worklist.prev`
+to it — while `worklist.next` is left untouched, because the insert filled
+`prev->next` (ours) instead of `head->next`. Aborting then undoes only the
+counters, and the pool is left with `head.next == head` but `head.prev`
+pointing *past our scratch page*, a state the worker reads as an empty list
+and that no later `list_add_tail()` repairs: every following round of the
+retry loops on that same tail and reports `pool did not settle`.
+
+`install_workqueue_umh_root()` therefore treats that shape as a recoverable
+insert and *publishes* it instead of aborting: when the tail store
+readback is lost, the pool tail no longer equals our entry, and our
+`entry.next` has been rewritten by the kernel to another direct-map pointer,
+the chain is already `head -> ours -> theirs -> head`, so writing
+`head.next` completes a valid list in which the stolen work item runs after
+ours. The round only falls back to undo-and-retry when nothing linked us
+(`entry.next` is still our entry or the worklist head), and it accepts a
+publish when the entry has already been dequeued (`entry.next == entry`),
+which means our work was taken while the readback was in flight.
+
+The `cve-2026-43499-root` helper is unaffected: its
 source (`src/su_daemon.c`) is unchanged, so the rebuilt binary is byte-identical
 to the previously published one.
 
