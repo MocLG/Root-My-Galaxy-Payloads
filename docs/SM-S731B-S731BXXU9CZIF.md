@@ -242,7 +242,7 @@ Verified with NDK `27.0.12077973`, API 35.
 
 | File | Size | SHA-256 |
 | --- | ---: | --- |
-| `artifacts/r13s-S731BXXU9CZIF/cve-2026-43499-app.so` | 153,280 | `737e8eb1eef231b3590c5b8a26bedcc53c1167e2a857ae3a20e2c1d0a0bc4062` |
+| `artifacts/r13s-S731BXXU9CZIF/cve-2026-43499-app.so` | 154,064 | `04804a76f2f0de8372149deff0fd00dcce7d366e6a8dd6a6e24a55969179cee6` |
 | `artifacts/r13s-S731BXXU9CZIF/cve-2026-43499-root` | 26,960 | `1d5750239bc0c8db5040183af00cbd90f4fe9114d8e1581de77237da6f5cbf63` |
 | `kernelsu/android14-6.1_kernelsu-r13s-S731BXXU9CZIF-kdp.ko` | 398,336 | `13fd97a8d303c63c8a3df5d70ad93f8fd311aec927a1dcdef1c3c004d492fd2f` |
 | `kernelsu/ksud-r13s-S731BXXU9CZIF-kdp` | 4,602,440 | `5cd19258692d87743a92078b25b40974d07e30a4f7e7dbeb10777ae039db7c7c` |
@@ -298,6 +298,16 @@ ours. The round only falls back to undo-and-retry when nothing linked us
 (`entry.next` is still our entry or the worklist head), and it accepts a
 publish when the entry has already been dequeued (`entry.next == entry`),
 which means our work was taken while the readback was in flight.
+
+The current `cve-2026-43499-app.so` also unlinks the injected pool work item
+when it is published but the kernel never reports completion. That path used to
+log `root umh published but incomplete; scratch retained` and leave
+`pool->worklist.next` pointing at our scratch entry, so a live kernel list kept
+a next pointer into memory owned only by the payload process. Once Android
+reclaimed that process, a later queue operation on the unbound pool could walk
+freed memory. The unlink fires only when the readback still shows our entry at
+the head, and it rolls back the prepublish counters, so the entry is either
+removed cleanly or left exactly as it was.
 
 The `cve-2026-43499-root` helper is unaffected: its
 source (`src/su_daemon.c`) is unchanged, so the rebuilt binary is byte-identical
