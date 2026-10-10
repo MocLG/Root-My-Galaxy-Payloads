@@ -21,6 +21,9 @@ endif
 ifeq ($(TARGET),a53x-A536EXXSNGZG3)
 API := 31
 endif
+ifeq ($(TARGET),a53x-A536EXXUOGZI3)
+API := 31
+endif
 
 TARGET_HEADER := src/targets/$(TARGET)/target.h
 TARGET_INCLUDE := targets/$(TARGET)/target.h
@@ -69,6 +72,17 @@ APP_PRELOAD_SRCS := \
   src/targets/a53x-A536EXXSNGZG3/chain.c \
   src/targets/a53x-A536EXXSNGZG3/ghostlock.c \
   src/targets/a53x-A536EXXSNGZG3/page.c
+PRELOAD_SRCS := $(APP_PRELOAD_SRCS)
+APP_RELEASE_OPT := -O2
+APP_RELEASE_LINK_FLAGS := -Wl,--gc-sections -Wl,--icf=all -s
+endif
+
+ifeq ($(TARGET),a53x-A536EXXUOGZI3)
+APP_PRELOAD_SRCS := \
+  src/targets/a53x-A536EXXUOGZI3/payload.c \
+  src/targets/a53x-A536EXXUOGZI3/chain.c \
+  src/targets/a53x-A536EXXUOGZI3/ghostlock.c \
+  src/targets/a53x-A536EXXUOGZI3/page.c
 PRELOAD_SRCS := $(APP_PRELOAD_SRCS)
 APP_RELEASE_OPT := -O2
 APP_RELEASE_LINK_FLAGS := -Wl,--gc-sections -Wl,--icf=all -s

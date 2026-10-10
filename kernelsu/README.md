@@ -36,7 +36,7 @@ between KMIs.
 | `android13-5.15.153_kernelsu-dm1q-S911U1UES6DYI3-kdp.ko` | `SM-S911U1`, `S911U1UES6DYI3` | `android13-5.15.153` | Exact DYI3 module with target `vermagic`, audited for manual relocation; no-patch-text build (RKP) with kretprobe fallback hooks |
 | `ksud-dm1q-S911U1UES6DYI3-kdp` | Same exact DYI3 build | `android13-5.15.153` | Device-tested late-load binary embedding the exact DYI3 no-patch-text module |
 | `android12-5.10_kernelsu-A536EXXSNGZG3-kdp.ko` | `SM-A536E`, `A536EXXSNGZG3` | `android12-5.10` | Device-tested exact A53 module with Samsung KDP/RKP/DEFEX support and live text/table patching disabled |
-| `ksud-A536EXXSNGZG3-kdp` | Same exact A53 build | `android12-5.10` | Device-tested late-load binary embedding the exact A53 module |
+| `ksud-A536EXXSNGZG3-kdp` | Same exact A53 build | `android12-5.10` | Device-tested late-load binary embedding the exact A53 module; also serves `SM-A536E` `A536EXXUOGZI3` (`5.10.246`, same KMI `android12-9-31999025`) |
 | `android14-6.1_kernelsu-r13s-S731BXXU9CZIF-kdp.ko` | `SM-S731B`, `S731BXXU9CZIF` (One UI 9) | `android14-6.1` | Exact CZIF module built from source with the `android14-6.1-20260313` DDK image and the target release `6.1.162-android14-11`, with `CONFIG_KSU_SAMSUNG_NO_PATCH_TEXT=y` so `ksu_patch_text()` returns `-EOPNOTSUPP` instead of calling `stop_machine()`. That is mandatory on this Exynos 2400 SoC: the live text patching path panics in Samsung/Exynos EL2 and reboots the device. `check_symbol` clean, zero-length `__versions`, and a clean manual-relocation audit against the recovered CZIF `vmlinux` (202 undefined imports, zero missing, zero CRC mismatches). Device-tested: loads on hardware without the `stop_machine()` panic |
 | `ksud-r13s-S731BXXU9CZIF-kdp` | Same exact CZIF build | `android14-6.1` | Device-tested late-load binary rebuilt from v3.2.5 + the Samsung patch + a reconstructed `--ephemeral` flag, embedding the exact CZIF module |
 
@@ -82,7 +82,13 @@ passes the recovered-target symbol audit, and was loaded on hardware with
 KernelSU Manager reporting `Working <LKM> [Jailbreak mode]` and version
 `32525-2`. The A536E GZG3 5.10 pair was also loaded from the normal Root My
 Galaxy app flow; KernelSU Manager reported `Working <LKM> [Jailbreak mode]`
-and version `32525-2`. The older A15 5.10 pair remains device-untested. The exact F9360ZCSAIZF1 no-LTO module above is device-tested (full-chain root and KernelSU Manager recognition on hardware, 2026-08-12 and 2026-09-01).
+and version `32525-2`. The same A53 module is reused for `A536EXXUOGZI3`
+(5.10.246): both releases carry the KMI `android12-9-31999025`, the module has
+an allocatable zero-length `__versions` section, and 5.10's `same_magic()`
+ignores the release token for modules with crcs, so only the
+` SMP preempt mod_unload modversions aarch64` tail is compared. The module's
+202 undefined imports all resolve in the UOGZI3 `vmlinux` (zero missing, zero
+CRC mismatches), so no new `ksud` is published for that release. The older A15 5.10 pair remains device-untested. The exact F9360ZCSAIZF1 no-LTO module above is device-tested (full-chain root and KernelSU Manager recognition on hardware, 2026-08-12 and 2026-09-01).
 
 ## Why the stock module crashes on Samsung
 
