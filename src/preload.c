@@ -14,7 +14,9 @@
 #ifndef DEFAULT_P0_ATTEMPT_TIMEOUT_SEC
 #define DEFAULT_P0_ATTEMPT_TIMEOUT_SEC 180
 #endif
+#ifndef APP_MIN_BOOT_UPTIME_SEC
 #define APP_MIN_BOOT_UPTIME_SEC 120
+#endif
 
 #if defined(APP_PAYLOAD) && defined(SLIDE_P0_OFFSET_CANDIDATES)
 struct app_p0_shared_state {

