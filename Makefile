@@ -107,18 +107,18 @@ stable: $(APP_STABLE)
 $(OUTDIR):
 	mkdir -p $@
 
-$(PRELOAD): $(PRELOAD_SRCS) $(TARGET_HEADER) src/offset.h src/common.h src/tracefs_slide.h src/kernelsnitch/*.h | $(OUTDIR)
+$(PRELOAD): $(PRELOAD_SRCS) $(TARGET_HEADER) src/offset.h src/common.h src/tracefs_slide.h src/tracefs_mm.h src/kernelsnitch/*.h | $(OUTDIR)
 	$(TARGET_CC) -fPIC $(COMMON_CFLAGS) $(PRELOAD_SRCS) \
 	  -shared -pthread -o $@
 
 $(ROOT_HELPER): src/su_daemon.c | $(OUTDIR)
 	$(TARGET_CC) -fPIE -pie -O2 -g0 -Wall -Wextra $< -ldl -o $@
 
-$(APP_PRELOAD): $(APP_PRELOAD_SRCS) $(TARGET_HEADER) src/offset.h src/common.h src/tracefs_slide.h src/kernelsnitch/*.h | $(OUTDIR)
+$(APP_PRELOAD): $(APP_PRELOAD_SRCS) $(TARGET_HEADER) src/offset.h src/common.h src/tracefs_slide.h src/tracefs_mm.h src/kernelsnitch/*.h | $(OUTDIR)
 	$(TARGET_CC) -DAPP_PAYLOAD=1 $(APP_TARGET_CFLAGS) -fPIC $(COMMON_CFLAGS) $(APP_PRELOAD_SRCS) \
 	  -shared -pthread -o $@
 
-$(APP_RELEASE): $(APP_PRELOAD_SRCS) $(TARGET_HEADER) src/offset.h src/common.h src/tracefs_slide.h src/kernelsnitch/*.h | $(OUTDIR)
+$(APP_RELEASE): $(APP_PRELOAD_SRCS) $(TARGET_HEADER) src/offset.h src/common.h src/tracefs_slide.h src/tracefs_mm.h src/kernelsnitch/*.h | $(OUTDIR)
 	$(TARGET_CC) -DAPP_PAYLOAD=1 $(APP_TARGET_CFLAGS) -fPIC $(APP_RELEASE_OPT) -g0 \
 	  -fno-unwind-tables -fno-asynchronous-unwind-tables \
 	  -ffunction-sections -fdata-sections \
@@ -130,7 +130,7 @@ $(APP_RELEASE): $(APP_PRELOAD_SRCS) $(TARGET_HEADER) src/offset.h src/common.h s
 	@test $$(stat -c %s $@) -le $(APP_RELEASE_SIZE)
 	truncate -s $(APP_RELEASE_SIZE) $@
 
-$(APP_STABLE): $(APP_PRELOAD_SRCS) $(TARGET_HEADER) src/offset.h src/common.h src/tracefs_slide.h src/kernelsnitch/*.h | $(OUTDIR)
+$(APP_STABLE): $(APP_PRELOAD_SRCS) $(TARGET_HEADER) src/offset.h src/common.h src/tracefs_slide.h src/tracefs_mm.h src/kernelsnitch/*.h | $(OUTDIR)
 	$(TARGET_CC) -DAPP_PAYLOAD=1 -DAPP_S928_STABLE_RACE=1 \
 	  -fPIC -Oz -g0 -fvisibility=hidden -fno-semantic-interposition \
 	  -fstack-protector-strong \
