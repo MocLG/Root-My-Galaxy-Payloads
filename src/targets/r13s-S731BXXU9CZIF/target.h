@@ -23,6 +23,11 @@
 #define APP_ACCEPT_SCHED_TRIGGER 1
 #define APP_PSELECT_POST_GUARD_AGE_CHECK 1
 #define APP_EXACT_PIPE_BUFFER_ONLY 1
+/* do_timer_create's kmem_cache_alloc call site, from the CZIF Image. */
+#define APP_TRACEFS_SLIDE 1
+#define SLIDE_TRACEFS_KMEM_SITE_OFF 0x00194fe0ULL
+#define SLIDE_TRACEFS_KMEM_OBJECT 0x108ULL
+#define SLIDE_TRACEFS_MAX_SLIDE 0x1f0000ULL
 #else
 #define BUILD_VARIANT_LABEL "r13s-S731BXXU9CZIF-root-umh"
 #endif
