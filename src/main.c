@@ -447,7 +447,8 @@ int run_exploit(int argc, char **argv) {
     pr_error("slide kaslr leak failed\n");
     return 1;
   }
-  if (getenv("SLIDE_ONLY") || getenv("P0_ONLY")) {
+  if (getenv("SLIDE_ONLY") || getenv("P0_ONLY") ||
+      getenv("P0_PAGE_ONLY")) {
     pr_success("slide-only done base=%016zx slide=%016zx p0_offset=%08zx\n",
                kaslr_base, kaslr_slide, slide_p0_offset);
     return 0;

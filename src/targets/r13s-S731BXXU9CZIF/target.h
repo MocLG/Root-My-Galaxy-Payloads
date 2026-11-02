@@ -28,6 +28,8 @@
 #define SLIDE_TRACEFS_KMEM_SITE_OFF 0x00194fe0ULL
 #define SLIDE_TRACEFS_KMEM_OBJECT 0x108ULL
 #define SLIDE_TRACEFS_MAX_SLIDE 0x1f0000ULL
+/* Keep P0 page discovery after the tracefs slide; the fops stage reuses it. */
+#define APP_TRACEFS_SLIDE_ASSIST_P0 1
 #else
 #define BUILD_VARIANT_LABEL "r13s-S731BXXU9CZIF-root-umh"
 #endif
