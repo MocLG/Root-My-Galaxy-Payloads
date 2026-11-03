@@ -2115,9 +2115,6 @@ uintptr_t prepare_kernel_page(int payload_mode) {
   int trace_window = 0;
 #if defined(APP_TRACEFS_MM_LEAK) && APP_TRACEFS_MM_LEAK
   trace_window = tracefs_mm_available();
-  if (trace_window) {
-    trace_window = tracefs_mm_start();
-  }
 #endif
   for (size_t i = 0; i < prepare_ctx.mm_cnt; i++) {
     prepare_ctx.childs[i] = clone_child();
@@ -2142,6 +2139,12 @@ uintptr_t prepare_kernel_page(int payload_mode) {
   if (!trace_window) {
     setup_kernel_page_kernelsnitch(payload_mode, cpu_count);
   }
+#if defined(APP_TRACEFS_MM_LEAK) && APP_TRACEFS_MM_LEAK
+  if (trace_window) {
+    trace_window = tracefs_mm_start();
+    tracefs_mm_baseline();
+  }
+#endif
   for (size_t i = 0; i < pre_ctx.mm_cnt; i++) {
     pre_ctx.childs[i] = clone_child();
   }

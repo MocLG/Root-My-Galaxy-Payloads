@@ -242,7 +242,7 @@ Verified with NDK `27.0.12077973`, API 35.
 
 | File | Size | SHA-256 |
 | --- | ---: | --- |
-| `artifacts/r13s-S731BXXU9CZIF/cve-2026-43499-app.so` | 163,896 | `30ce35afed13b0614c7815127b8f426ff326d2306f9e79bbd390d3002a3f64bc` |
+| `artifacts/r13s-S731BXXU9CZIF/cve-2026-43499-app.so` | 164,816 | `fd3cbf2ab3ccdbd0efc49c9faf6ebcb471ff1dd4f28f2407f755738a44b890ff` |
 | `artifacts/r13s-S731BXXU9CZIF/cve-2026-43499-root` | 26,960 | `1d5750239bc0c8db5040183af00cbd90f4fe9114d8e1581de77237da6f5cbf63` |
 | `kernelsu/android14-6.1_kernelsu-r13s-S731BXXU9CZIF-kdp.ko` | 398,336 | `13fd97a8d303c63c8a3df5d70ad93f8fd311aec927a1dcdef1c3c004d492fd2f` |
 | `kernelsu/ksud-r13s-S731BXXU9CZIF-kdp` | 4,602,440 | `5cd19258692d87743a92078b25b40974d07e30a4f7e7dbeb10777ae039db7c7c` |

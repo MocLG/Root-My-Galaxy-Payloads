@@ -113,7 +113,10 @@ static void wait_for_boot_quiet_window(void) {
     pr_info("waiting for boot allocator quiet window seconds=%lld uptime=%lld\n",
             (long long)wait_sec, (long long)uptime.tv_sec);
     while (wait_sec > 0) {
-      wait_sec = sleep((unsigned int)wait_sec);
+      unsigned int slice = wait_sec > 30 ? 30u : (unsigned int)wait_sec;
+      pr_info("boot quiet window remaining=%lld\n", (long long)wait_sec);
+      unsigned int left = sleep(slice);
+      wait_sec -= (time_t)(slice - left);
     }
   }
 #endif
