@@ -1139,12 +1139,10 @@ int verify_p0_pipe_oracle_gate(void) {
                               p0_gate_holders[pipe_index], PAGE_SIZE, 1)) {
       pr_warning("p0 gate tee failed pipe=%zu errno=%d\n",
                  pipe_index, errno);
-      spawn_p0_ref_keeper(-1);
       return 0;
     }
     if (!pipe_read_full(pipe_fds_reclaim[pipe_index][0], page,
                         sizeof(page))) {
-      spawn_p0_ref_keeper(-1);
       return 0;
     }
     size_t gate_offset = PAGE_SIZE;
@@ -1184,7 +1182,6 @@ int verify_p0_pipe_oracle_gate(void) {
   for (size_t pipe_index = 0; pipe_index < PIPE_RECLAIM; pipe_index++) {
     if (!pipe_write_full(pipe_fds_reclaim[pipe_index][1], marker,
                          sizeof(marker))) {
-      spawn_p0_ref_keeper(-1);
       return 0;
     }
   }

