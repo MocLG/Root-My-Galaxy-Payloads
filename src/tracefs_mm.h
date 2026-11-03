@@ -320,12 +320,11 @@ static int tracefs_mm_finish(uintptr_t *leaked, size_t pick, size_t min_index,
   uintptr_t held_page = pick < list_count
                             ? list[pick] & ~(TRACEFS_MM_SLAB_SIZE - 1)
                             : 0;
-  /* The leak child's page frees right before the spray, so prefer it and keep
-     any other fully owned page as the fallback. */
-  for (int pass = 0; pass < 2 && !best; pass++)
+  /* The leak child keeps its own page until the very end, so the pipe reclaim
+     only wins on a page that was fully freed during the leak stage. */
   for (size_t i = 0; i < list_count && !best; i++) {
     uintptr_t base = list[i] & ~(TRACEFS_MM_SLAB_SIZE - 1);
-    if ((pass == 0) != (base == held_page)) {
+    if (base == held_page) {
       continue;
     }
     size_t objects = 0;

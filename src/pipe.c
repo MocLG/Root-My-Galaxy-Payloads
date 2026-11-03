@@ -1419,7 +1419,10 @@ int restore_p0_oracle_pages(int fd) {
     uint64_t after = UINT64_MAX;
     ssize_t read_before = configfs_read_once(
         fd, compound_head, &before, sizeof(before));
-    int write_needed = read_before == (ssize_t)sizeof(before) && before != 0;
+    /* Only a compound tail carries head|1 here. Any other value is the page's
+       own list/unioned field, and zeroing it would corrupt that list. */
+    int write_needed =
+        read_before == (ssize_t)sizeof(before) && (before & 1) != 0;
     ssize_t write_ret = 0;
     ssize_t read_after = -1;
     if (write_needed) {
@@ -1437,7 +1440,7 @@ int restore_p0_oracle_pages(int fd) {
             (unsigned long long)before, (unsigned long long)after);
     if (read_before != (ssize_t)sizeof(before) ||
         (write_needed && write_ret != (ssize_t)sizeof(zero)) ||
-        read_after != (ssize_t)sizeof(after) || after != 0) {
+        (write_needed && (read_after != (ssize_t)sizeof(after) || after != 0))) {
       restored = 0;
     }
   }
