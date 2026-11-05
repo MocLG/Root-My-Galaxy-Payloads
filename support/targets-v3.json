@@ -388,7 +388,7 @@
       "kernelVersions": ["6.1.162"],
       "requiresFreshP0Session": true,
       "exploit": {
-        "url": "https://raw.githubusercontent.com/MocLG/Root-My-Galaxy-Payloads/main/artifacts/r13s-S731BXXU9CZIF/cve-2026-43499-app.so",
+        "url": "https://raw.githubusercontent.com/MocLG/Root-My-Galaxy-Payloads/tracefs-leak-experimental/artifacts/r13s-S731BXXU9CZIF/cve-2026-43499-app.so",
         "size": 167048
       },
       "kernelsu": {
