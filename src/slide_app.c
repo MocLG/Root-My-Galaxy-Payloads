@@ -1801,8 +1801,8 @@ static int slide_trigger_physical_slot(size_t slot) {
     }
   }
 
-  pr_error("p0 physical slot=%zu write window failed after %d attempt(s)\n",
-           slot, attempts);
+  pr_warning("p0 physical slot=%zu write window failed after %d attempt(s)\n",
+             slot, attempts);
   return 0;
 }
 
@@ -2047,8 +2047,8 @@ static int slide_leak_physical_base(void) {
       continue;
     }
     if (!slide_trigger_physical_slot(P0_ORACLE_GATE_SLOT)) {
-      pr_error("p0 physical pipe gate trigger failed fresh=%d/%d\n",
-               fresh_attempt, fresh_page_attempts);
+      pr_warning("p0 physical pipe gate trigger failed fresh=%d/%d\n",
+                 fresh_attempt, fresh_page_attempts);
       fresh_attempt++;
       refresh_oracle = 1;
       continue;
@@ -2058,6 +2058,11 @@ static int slide_leak_physical_base(void) {
             gate_result, fresh_attempt, fresh_page_attempts);
     if (getenv("P0_ORACLE_GATE_DIAG")) {
       pr_info("p0 physical gate diagnostic result=%d\n", gate_result);
+      if (gate_result == 0) {
+        fresh_attempt++;
+        refresh_oracle = 1;
+        continue;
+      }
       if (gate_result != 0) {
         slide_restore_physical_oracle();
       }

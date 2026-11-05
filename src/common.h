@@ -369,6 +369,14 @@ void setup_kernelsnitch(void);
 int kernelsnitch_collisions_ready(void);
 void run_kernelsnitch_bruteforce(void);
 uintptr_t cleanup_kernelsnitch(void);
+#if defined(APP_TRACEFS_MM_LEAK) && APP_TRACEFS_MM_LEAK
+int tracefs_mm_start(void);
+void tracefs_mm_baseline(void);
+pid_t tracefs_mm_clone_hold(void);
+int tracefs_mm_finish(uintptr_t *leaked, size_t pick, size_t min_index,
+                      size_t max_index);
+void tracefs_mm_release_child(void);
+#endif
 void close_ctx_memfds(struct mm_ctx *ctx);
 void free_ctx_storage(struct mm_ctx *ctx);
 void cleanup_page_prepare_state(void);
